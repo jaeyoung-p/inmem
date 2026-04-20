@@ -1,0 +1,47 @@
+--- a/src/python/gem5/components/boards/x86_board.py
++++ b/src/python/gem5/components/boards/x86_board.py
+@@ -292,18 +292,33 @@
+         self.workload.acpi_description_table_pointer.oem_id = "gem5"
+         self.workload.acpi_description_table_pointer.rsdt.oem_id = "gem5"
+         self.workload.acpi_description_table_pointer.xsdt.oem_id = "gem5"
+-        entries = [
++        e820_entries = [
+             # Mark the first megabyte of memory as reserved
+-            X86E820Entry(addr=0, size="639KiB", range_type=1),
+-            X86E820Entry(addr=0x9FC00, size="385KiB", range_type=2),
+-            # Mark the rest of physical memory as available
+-            X86E820Entry(
+-                addr=0x100000,
+-                size=f"{self.mem_ranges[0].size() - 0x100000:d}B",
+-                range_type=1,
+-            ),
+-            # Reserve the last 16kB of the 32-bit address space for the m5ops
+-            X86E820Entry(addr=0xFFFF0000, size="64KiB", range_type=2),
++            (0, "639KiB", 1),
++            (0x9FC00, "385KiB", 2),
++        ]
++
++        for mem_range in self.mem_ranges:
++            start = int(mem_range.start)
++            size = mem_range.size()
++
++            if start == 0xC0000000 and size == 0x100000:
++                continue
++
++            if start == 0:
++                if size <= 0x100000:
++                    continue
++                start = 0x100000
++                size -= 0x100000
++
++            e820_entries.append((start, f"{size:d}B", 1))
++
++        # Reserve the last 64KiB of the 32-bit address space for m5ops.
++        e820_entries.append((0xFFFF0000, "64KiB", 2))
++
++        entries = [
++            X86E820Entry(addr=addr, size=size, range_type=range_type)
++            for addr, size, range_type in sorted(e820_entries)
+         ]
+ 
+         self.workload.e820_table.entries = entries

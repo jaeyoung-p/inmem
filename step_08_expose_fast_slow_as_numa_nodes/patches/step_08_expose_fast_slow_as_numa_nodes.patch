@@ -1,0 +1,430 @@
+diff --git a/src/arch/x86/bios/ACPI.py b/src/arch/x86/bios/ACPI.py
+index 90d0ce094c..9d80c9654d 100644
+--- a/src/arch/x86/bios/ACPI.py
++++ b/src/arch/x86/bios/ACPI.py
+@@ -137,6 +137,54 @@ class X86ACPIMadtLAPICOverride(X86ACPIMadtRecord):
+     address = Param.Addr(0, "64-bit Physical Address of Local APIC")
+ 
+ 
++class X86ACPISratRecord(SimObject):
++    type = "X86ACPISratRecord"
++    cxx_class = "gem5::X86ISA::ACPI::SRAT::Record"
++    cxx_header = "arch/x86/bios/acpi.hh"
++    abstract = True
++
++
++class X86ACPISrat(X86ACPISysDescTable):
++    type = "X86ACPISrat"
++    cxx_class = "gem5::X86ISA::ACPI::SRAT::SRAT"
++    cxx_header = "arch/x86/bios/acpi.hh"
++
++    table_revision = Param.UInt32(1, "SRAT table revision")
++    records = VectorParam.X86ACPISratRecord([], "Records in this SRAT")
++
++
++class X86ACPISratProcessorLocalApic(X86ACPISratRecord):
++    type = "X86ACPISratProcessorLocalApic"
++    cxx_header = "arch/x86/bios/acpi.hh"
++    cxx_class = "gem5::X86ISA::ACPI::SRAT::ProcessorLocalApic"
++
++    proximity_domain = Param.UInt32(0, "NUMA proximity domain")
++    apic_id = Param.UInt8(0, "APIC ID")
++    flags = Param.UInt32(1, "Affinity flags")
++    local_sapic_eid = Param.UInt8(0, "Local SAPIC EID")
++    clock_domain = Param.UInt32(0, "Clock domain")
++
++
++class X86ACPISratMemoryAffinity(X86ACPISratRecord):
++    type = "X86ACPISratMemoryAffinity"
++    cxx_header = "arch/x86/bios/acpi.hh"
++    cxx_class = "gem5::X86ISA::ACPI::SRAT::MemoryAffinity"
++
++    proximity_domain = Param.UInt32(0, "NUMA proximity domain")
++    base_address = Param.Addr(0, "Memory range base address")
++    address_length = Param.Addr(0, "Memory range length")
++    flags = Param.UInt32(1, "Affinity flags")
++
++
++class X86ACPISlit(X86ACPISysDescTable):
++    type = "X86ACPISlit"
++    cxx_class = "gem5::X86ISA::ACPI::SLIT"
++    cxx_header = "arch/x86/bios/acpi.hh"
++
++    locality_count = Param.UInt64(0, "Number of NUMA localities")
++    distances = VectorParam.UInt8([], "Flattened locality distance matrix")
++
++
+ # Root System Description Pointer Structure
+ class X86ACPIRSDP(SimObject):
+     type = "X86ACPIRSDP"
+diff --git a/src/arch/x86/bios/SConscript b/src/arch/x86/bios/SConscript
+index a6bc00cbb7..30f4d458ad 100644
+--- a/src/arch/x86/bios/SConscript
++++ b/src/arch/x86/bios/SConscript
+@@ -81,7 +81,11 @@ SimObject(
+     sim_objects=['X86ACPISysDescTable', 'X86ACPIRSDT', 'X86ACPIXSDT',
+                  'X86ACPIMadtRecord', 'X86ACPIMadt', 'X86ACPIMadtLAPIC',
+                  'X86ACPIMadtIOAPIC', 'X86ACPIMadtIntSourceOverride',
+-                 'X86ACPIMadtNMI', 'X86ACPIMadtLAPICOverride', 'X86ACPIRSDP'],
++                 'X86ACPIMadtNMI', 'X86ACPIMadtLAPICOverride',
++                 'X86ACPISratRecord', 'X86ACPISrat',
++                 'X86ACPISratProcessorLocalApic',
++                 'X86ACPISratMemoryAffinity', 'X86ACPISlit',
++                 'X86ACPIRSDP'],
+     tags=['x86 isa']
+ )
+ Source('acpi.cc', tags=['x86 isa'])
+diff --git a/src/arch/x86/bios/acpi.cc b/src/arch/x86/bios/acpi.cc
+index f2dbcfbdc9..0b80ca9f68 100644
+--- a/src/arch/x86/bios/acpi.cc
++++ b/src/arch/x86/bios/acpi.cc
+@@ -331,6 +331,111 @@ MADT::LAPICOverride::prepareBuf(std::vector<uint8_t>& mem) const
+     Record::prepareBuf(mem);
+ }
+ 
++//// SRAT
++SRAT::SRAT::SRAT(const Params& p) :
++    SysDescTable(p, "SRAT", 3),
++    records(p.records)
++{}
++
++Addr
++SRAT::SRAT::writeBuf(PortProxy& phys_proxy, Allocator& alloc,
++        std::vector<uint8_t>& mem) const
++{
++    assert(mem.empty());
++    mem.resize(sizeof(Mem));
++
++    Mem* header = reinterpret_cast<Mem*>(mem.data());
++    header->tableRevision = params().table_revision;
++
++    for (const auto& record : records) {
++        auto entry = record->prepare();
++        mem.insert(mem.end(), entry.begin(), entry.end());
++    }
++
++    DPRINTF(ACPI, "SRAT: writing %d records (size: %d)\n",
++            records.size(), mem.size());
++
++    return SysDescTable::writeBuf(phys_proxy, alloc, mem);
++}
++
++void
++SRAT::Record::prepareBuf(std::vector<uint8_t>& mem) const
++{
++    assert(mem.size() >= sizeof(Mem));
++    DPRINTF(ACPI, "SRAT: writing record type %d (size: %d)\n",
++            type, mem.size());
++
++    Mem* header = reinterpret_cast<Mem*>(mem.data());
++    header->type = type;
++    header->length = mem.size();
++}
++
++void
++SRAT::ProcessorLocalApic::prepareBuf(std::vector<uint8_t>& mem) const
++{
++    assert(mem.empty());
++    mem.resize(sizeof(Mem));
++
++    const uint32_t domain = params().proximity_domain;
++    Mem* data = reinterpret_cast<Mem*>(mem.data());
++    data->proximityDomainLo = domain & 0xff;
++    data->apicId = params().apic_id;
++    data->flags = params().flags;
++    data->localSapicEid = params().local_sapic_eid;
++    data->proximityDomainHi[0] = (domain >> 8) & 0xff;
++    data->proximityDomainHi[1] = (domain >> 16) & 0xff;
++    data->proximityDomainHi[2] = (domain >> 24) & 0xff;
++    data->clockDomain = params().clock_domain;
++
++    Record::prepareBuf(mem);
++}
++
++void
++SRAT::MemoryAffinity::prepareBuf(std::vector<uint8_t>& mem) const
++{
++    assert(mem.empty());
++    mem.resize(sizeof(Mem));
++
++    Mem* data = reinterpret_cast<Mem*>(mem.data());
++    data->proximityDomain = params().proximity_domain;
++    data->baseAddress = params().base_address;
++    data->addressLength = params().address_length;
++    data->flags = params().flags;
++
++    Record::prepareBuf(mem);
++}
++
++//// SLIT
++SLIT::SLIT(const Params& p) :
++    SysDescTable(p, "SLIT", 1)
++{}
++
++Addr
++SLIT::writeBuf(PortProxy& phys_proxy, Allocator& alloc,
++        std::vector<uint8_t>& mem) const
++{
++    assert(mem.empty());
++
++    const uint64_t count = params().locality_count;
++    fatal_if(count == 0, "SLIT locality_count must be non-zero.");
++    fatal_if(params().distances.size() != count * count,
++            "SLIT distance matrix has %zu entries, expected %llu.",
++            params().distances.size(),
++            static_cast<unsigned long long>(count * count));
++
++    mem.resize(sizeof(Mem));
++    Mem* header = reinterpret_cast<Mem*>(mem.data());
++    header->localityCount = count;
++
++    mem.insert(mem.end(), params().distances.begin(),
++            params().distances.end());
++
++    DPRINTF(ACPI, "SLIT: writing %llu localities (size: %d)\n",
++            static_cast<unsigned long long>(count), mem.size());
++
++    return SysDescTable::writeBuf(phys_proxy, alloc, mem);
++}
++
+ } // namespace ACPI
+ 
+ } // namespace X86ISA
+diff --git a/src/arch/x86/bios/acpi.hh b/src/arch/x86/bios/acpi.hh
+index bbad0f8a75..c61fb211cc 100644
+--- a/src/arch/x86/bios/acpi.hh
++++ b/src/arch/x86/bios/acpi.hh
+@@ -55,6 +55,11 @@
+ #include "params/X86ACPIMadtRecord.hh"
+ #include "params/X86ACPIRSDP.hh"
+ #include "params/X86ACPIRSDT.hh"
++#include "params/X86ACPISlit.hh"
++#include "params/X86ACPISrat.hh"
++#include "params/X86ACPISratMemoryAffinity.hh"
++#include "params/X86ACPISratProcessorLocalApic.hh"
++#include "params/X86ACPISratRecord.hh"
+ #include "params/X86ACPISysDescTable.hh"
+ #include "params/X86ACPIXSDT.hh"
+ #include "sim/sim_object.hh"
+@@ -359,6 +364,127 @@ class MADT : public SysDescTable
+ 
+ } // namespace MADT
+ 
++namespace SRAT
++{
++class Record : public SimObject
++{
++  protected:
++    PARAMS(X86ACPISratRecord);
++
++    struct GEM5_PACKED Mem
++    {
++        uint8_t type = 0;
++        uint8_t length = 0;
++    };
++    static_assert(std::is_trivially_copyable_v<Mem>,
++            "Type not suitable for memcpy.");
++
++    uint8_t type;
++
++    virtual void prepareBuf(std::vector<uint8_t>& mem) const = 0;
++
++  public:
++    Record(const Params& p, uint8_t _type) : SimObject(p), type(_type) {}
++
++    std::vector<uint8_t>
++    prepare() const
++    {
++        std::vector<uint8_t> mem;
++        prepareBuf(mem);
++        return mem;
++    }
++};
++
++class ProcessorLocalApic : public Record
++{
++  protected:
++    PARAMS(X86ACPISratProcessorLocalApic);
++
++    struct GEM5_PACKED Mem : public Record::Mem
++    {
++        uint8_t proximityDomainLo = 0;
++        uint8_t apicId = 0;
++        uint32_t flags = 0;
++        uint8_t localSapicEid = 0;
++        uint8_t proximityDomainHi[3] = {};
++        uint32_t clockDomain = 0;
++    };
++    static_assert(std::is_trivially_copyable_v<Mem>,
++            "Type not suitable for memcpy.");
++
++    void prepareBuf(std::vector<uint8_t>& mem) const override;
++
++  public:
++    ProcessorLocalApic(const Params& p) : Record(p, 0) {}
++};
++
++class MemoryAffinity : public Record
++{
++  protected:
++    PARAMS(X86ACPISratMemoryAffinity);
++
++    struct GEM5_PACKED Mem : public Record::Mem
++    {
++        uint32_t proximityDomain = 0;
++        uint16_t _reserved1 = 0;
++        uint64_t baseAddress = 0;
++        uint64_t addressLength = 0;
++        uint32_t _reserved2 = 0;
++        uint32_t flags = 0;
++        uint64_t _reserved3 = 0;
++    };
++    static_assert(std::is_trivially_copyable_v<Mem>,
++            "Type not suitable for memcpy.");
++
++    void prepareBuf(std::vector<uint8_t>& mem) const override;
++
++  public:
++    MemoryAffinity(const Params& p) : Record(p, 1) {}
++};
++
++class SRAT : public SysDescTable
++{
++  protected:
++    PARAMS(X86ACPISrat);
++
++    struct GEM5_PACKED Mem : public SysDescTable::Mem
++    {
++        uint32_t tableRevision = 0;
++        uint64_t _reserved = 0;
++    };
++    static_assert(std::is_trivially_copyable_v<Mem>,
++            "Type not suitable for memcpy.");
++
++    std::vector<Record *> records;
++
++    Addr writeBuf(PortProxy& phys_proxy, Allocator& alloc,
++            std::vector<uint8_t>& mem) const override;
++
++  public:
++    SRAT(const Params &p);
++};
++
++} // namespace SRAT
++
++class SLIT : public SysDescTable
++{
++  protected:
++    PARAMS(X86ACPISlit);
++
++    struct GEM5_PACKED Mem : public SysDescTable::Mem
++    {
++        uint64_t localityCount = 0;
++    };
++    static_assert(std::is_trivially_copyable_v<Mem>,
++            "Type not suitable for memcpy.");
++
++    Addr writeBuf(PortProxy& phys_proxy, Allocator& alloc,
++            std::vector<uint8_t>& mem) const override;
++
++  public:
++    SLIT(const Params &p);
++};
++
+ } // namespace ACPI
+ 
+ } // namespace X86ISA
+--- a/src/python/gem5/components/boards/x86_board.py
++++ b/src/python/gem5/components/boards/x86_board.py
+@@ -43,6 +43,10 @@
+     X86ACPIMadtIntSourceOverride,
+     X86ACPIMadtIOAPIC,
+     X86ACPIMadtLAPIC,
++    X86ACPISlit,
++    X86ACPISrat,
++    X86ACPISratMemoryAffinity,
++    X86ACPISratProcessorLocalApic,
+     X86E820Entry,
+     X86FsLinux,
+     X86IntelMPBus,
+@@ -284,6 +288,7 @@
+         )
+         self.workload.acpi_description_table_pointer.rsdt.entries.append(madt)
+         self.workload.acpi_description_table_pointer.xsdt.entries.append(madt)
++        self._setup_numa_acpi_tables()
+         self.workload.acpi_description_table_pointer.oem_id = "gem5"
+         self.workload.acpi_description_table_pointer.rsdt.oem_id = "gem5"
+         self.workload.acpi_description_table_pointer.xsdt.oem_id = "gem5"
+@@ -318,6 +323,72 @@
+ 
+         self.workload.e820_table.entries = entries
+ 
++    def _setup_numa_acpi_tables(self) -> None:
++        memory = self.get_memory()
++        if not hasattr(memory, "get_numa_memory_ranges"):
++            return
++
++        node_ranges = memory.get_numa_memory_ranges()
++        if not node_ranges:
++            return
++
++        node_ids = sorted(int(node_id) for node_id in node_ranges.keys())
++        if node_ids != [0, 1]:
++            raise ValueError(
++                "X86Board NUMA ACPI support currently expects exactly "
++                "nodes 0 and 1."
++            )
++
++        srat_records = [
++            X86ACPISratProcessorLocalApic(
++                proximity_domain=0,
++                apic_id=apic_id,
++                flags=1,
++            )
++            for apic_id in range(self.get_processor().get_num_cores())
++        ]
++
++        for node_id in node_ids:
++            for mem_range in node_ranges[node_id]:
++                start = int(mem_range.start)
++                size = mem_range.size()
++                segments = []
++
++                if start == 0:
++                    if size > 0x9FC00:
++                        segments.append((0, 0x9FC00))
++                    if size > 0x100000:
++                        segments.append((0x100000, size - 0x100000))
++                else:
++                    segments.append((start, size))
++
++                for segment_start, segment_size in segments:
++                    srat_records.append(
++                        X86ACPISratMemoryAffinity(
++                            proximity_domain=node_id,
++                            base_address=segment_start,
++                            address_length=segment_size,
++                            flags=1,
++                        )
++                    )
++
++        srat = X86ACPISrat(
++            records=srat_records,
++            oem_id="gem5",
++            oem_table_id="NUMA",
++        )
++        slit = X86ACPISlit(
++            locality_count=2,
++            distances=[10, 20, 20, 10],
++            oem_id="gem5",
++            oem_table_id="NUMA",
++        )
++
++        rsdt = self.workload.acpi_description_table_pointer.rsdt
++        xsdt = self.workload.acpi_description_table_pointer.xsdt
++        rsdt.entries.extend([srat, slit])
++        xsdt.entries.extend([srat, slit])
++
+     @overrides(AbstractSystemBoard)
+     def has_io_bus(self) -> bool:
+         return self.is_fullsystem()

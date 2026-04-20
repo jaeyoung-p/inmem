@@ -1,0 +1,3 @@
+[submodule "gem5"]
+	path = gem5
+	url = https://github.com/jaeyoung-p/gem5_25.1.0.0

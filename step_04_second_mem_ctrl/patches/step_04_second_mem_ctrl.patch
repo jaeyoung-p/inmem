@@ -1,0 +1,211 @@
+diff --git a/src/python/SConscript b/src/python/SConscript
+index 3704e1ed33..965acb1a92 100644
+--- a/src/python/SConscript
++++ b/src/python/SConscript
+@@ -242,6 +242,7 @@ PySource('gem5.components.memory', 'gem5/components/memory/memory.py')
+ PySource('gem5.components.memory', 'gem5/components/memory/single_channel.py')
+ PySource('gem5.components.memory', 'gem5/components/memory/multi_channel.py')
+ PySource('gem5.components.memory', 'gem5/components/memory/hbm.py')
++PySource('gem5.components.memory', 'gem5/components/memory/tiered.py')
+ PySource('gem5.components.memory.dram_interfaces',
+     'gem5/components/memory/dram_interfaces/__init__.py')
+ PySource('gem5.components.memory.dram_interfaces',
+diff --git a/src/python/gem5/components/boards/x86_board.py b/src/python/gem5/components/boards/x86_board.py
+index d5556f4724..ada1d2d23e 100644
+--- a/src/python/gem5/components/boards/x86_board.py
++++ b/src/python/gem5/components/boards/x86_board.py
+@@ -370,17 +370,20 @@ class X86Board(AbstractSystemBoard, KernelDiskWorkload, SEBinaryWorkload):
+     def _setup_memory_ranges(self):
+         memory = self.get_memory()
+ 
+-        if memory.get_size() > toMemorySize("3GiB"):
++        if hasattr(memory, "get_default_memory_ranges"):
++            data_ranges = memory.get_default_memory_ranges()
++        elif memory.get_size() > toMemorySize("3GiB"):
+             raise Exception(
+                 "X86Board currently only supports memory sizes up "
+                 "to 3GiB because of the I/O hole."
+             )
+-        data_range = AddrRange(memory.get_size())
+-        memory.set_memory_range([data_range])
++        else:
++            data_ranges = [AddrRange(memory.get_size())]
++
++        memory.set_memory_range(data_ranges)
+ 
+         # Add the address range for the IO
+-        self.mem_ranges = [
+-            data_range,  # All data
++        self.mem_ranges = data_ranges + [
+             AddrRange(0xC0000000, size=0x100000),  # For I/0
+         ]
+ 
+diff --git a/src/python/gem5/components/memory/__init__.py b/src/python/gem5/components/memory/__init__.py
+index 49a8cb8173..229fcbcdf1 100644
+--- a/src/python/gem5/components/memory/__init__.py
++++ b/src/python/gem5/components/memory/__init__.py
+@@ -41,6 +41,7 @@ from .single_channel import (
+     SingleChannelHBM,
+     SingleChannelLPDDR3_1600,
+ )
++from .tiered import TwoTierMemory
+ 
+ try:
+     from .dramsys import (
+diff --git a/src/python/gem5/components/memory/tiered.py b/src/python/gem5/components/memory/tiered.py
+new file mode 100644
+index 0000000000..a6f633e192
+--- /dev/null
++++ b/src/python/gem5/components/memory/tiered.py
+@@ -0,0 +1,151 @@
++# Copyright (c) 2026
++# All rights reserved.
++#
++# Redistribution and use in source and binary forms, with or without
++# modification, are permitted provided that the following conditions are
++# met: redistributions of source code must retain the above copyright
++# notice, this list of conditions and the following disclaimer;
++# redistributions in binary form must reproduce the above copyright
++# notice, this list of conditions and the following disclaimer in the
++# documentation and/or other materials provided with the distribution;
++# neither the name of the copyright holders nor the names of its
++# contributors may be used to endorse or promote products derived from
++# this software without specific prior written permission.
++#
++# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++
++"""Fixed two-tier ordinary RAM memory component."""
++
++from typing import (
++    Dict,
++    List,
++    Sequence,
++    Tuple,
++)
++
++from m5.objects import (
++    AbstractMemory,
++    MemCtrl,
++)
++from m5.params import (
++    AddrRange,
++    Port,
++)
++from m5.util.convert import toMemorySize
++
++from ...utils.override import overrides
++from ..boards.abstract_board import AbstractBoard
++from .abstract_memory_system import AbstractMemorySystem
++from .dram_interfaces.ddr5 import DDR5_6400_4x8
++
++
++class TwoTierMemory(AbstractMemorySystem):
++    """Two fixed ordinary RAM tiers, each backed by one DDR5 MemCtrl.
++
++    The tiers use the same DRAM interface class. The only intentional
++    performance difference is controller-side static latency.
++    """
++
++    def __init__(self) -> None:
++        super().__init__()
++
++        object.__setattr__(self, "fast_range", AddrRange(start=0, size="2GiB"))
++        object.__setattr__(
++            self, "slow_range", AddrRange(start=0x100000000, size="1GiB")
++        )
++        self._size = self.fast_range.size() + self.slow_range.size()
++
++        self.fast_dram = DDR5_6400_4x8()
++        self.slow_dram = DDR5_6400_4x8()
++
++        self.fast_ctrl = MemCtrl(dram=self.fast_dram)
++        self.slow_ctrl = MemCtrl(dram=self.slow_dram)
++
++        self.fast_ctrl.static_frontend_latency = "10ns"
++        self.fast_ctrl.static_backend_latency = "10ns"
++        self.slow_ctrl.static_frontend_latency = "40ns"
++        self.slow_ctrl.static_backend_latency = "40ns"
++
++        self.set_memory_range([self.fast_range, self.slow_range])
++
++    def get_default_memory_ranges(self) -> List[AddrRange]:
++        return [self.fast_range, self.slow_range]
++
++    def get_numa_memory_ranges(self) -> Dict[int, List[AddrRange]]:
++        return {
++            0: [self.fast_range],
++            1: [self.slow_range],
++        }
++
++    def get_fast_controller(self) -> MemCtrl:
++        return self.fast_ctrl
++
++    def get_slow_controller(self) -> MemCtrl:
++        return self.slow_ctrl
++
++    def get_fast_port(self) -> Port:
++        return self.fast_ctrl.port
++
++    def get_slow_port(self) -> Port:
++        return self.slow_ctrl.port
++
++    @overrides(AbstractMemorySystem)
++    def incorporate_memory(self, board: AbstractBoard) -> None:
++        pass
++
++    @overrides(AbstractMemorySystem)
++    def get_mem_ports(self) -> Sequence[Tuple[AddrRange, Port]]:
++        return [
++            (self.fast_range, self.fast_ctrl.port),
++            (self.slow_range, self.slow_ctrl.port),
++        ]
++
++    @overrides(AbstractMemorySystem)
++    def get_memory_controllers(self) -> List[MemCtrl]:
++        return [self.fast_ctrl, self.slow_ctrl]
++
++    @overrides(AbstractMemorySystem)
++    def get_mem_interfaces(self) -> List[AbstractMemory]:
++        return [self.fast_dram, self.slow_dram]
++
++    @overrides(AbstractMemorySystem)
++    def get_size(self) -> int:
++        return self._size
++
++    @overrides(AbstractMemorySystem)
++    def get_uninterleaved_range(self) -> List[AddrRange]:
++        return [self.fast_range, self.slow_range]
++
++    @overrides(AbstractMemorySystem)
++    def set_memory_range(self, ranges: List[AddrRange]) -> None:
++        expected_fast_size = toMemorySize("2GiB")
++        expected_slow_size = toMemorySize("1GiB")
++
++        if (
++            len(ranges) != 2
++            or int(ranges[0].start) != 0
++            or ranges[0].size() != expected_fast_size
++            or int(ranges[1].start) != 0x100000000
++            or ranges[1].size() != expected_slow_size
++        ):
++            raise ValueError(
++                "TwoTierMemory requires exactly two fixed RAM ranges: "
++                "[0, 2GiB) and [4GiB, 5GiB)."
++            )
++
++        object.__setattr__(self, "fast_range", ranges[0])
++        object.__setattr__(self, "slow_range", ranges[1])
++        self._size = self.fast_range.size() + self.slow_range.size()
++
++        self.fast_dram.range = self.fast_range
++        self.slow_dram.range = self.slow_range
