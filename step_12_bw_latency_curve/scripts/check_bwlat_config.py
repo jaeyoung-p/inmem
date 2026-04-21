@@ -48,8 +48,8 @@ def main() -> int:
         raise SystemExit("expected eighteen DRAMInterface instances")
     if config.count("type=RangeAddrMapper") != 0:
         raise SystemExit("node 0 ranges should use direct controllers under KVM")
-    if config.count("type=CxlMemLink") != 2:
-        raise SystemExit("expected two CxlMemLink instances")
+    if config.count("type=CxlMemLink") != 1:
+        raise SystemExit("expected one shared CxlMemLink instance")
     if config.count("type=X86KvmCPU") < args.min_cores:
         raise SystemExit(f"expected at least {args.min_cores} KVM start CPUs")
     if config.count("type=BaseTimingSimpleCPU") < args.min_cores:
@@ -101,7 +101,7 @@ def main() -> int:
     print("- FS script uses LargeMemoryX86Board")
     print(f"- config exposes at least {args.min_cores} guest cores")
     print("- config preserves eighteen DDR5-derived memory interfaces/controllers")
-    print("- config includes direct node 0 controllers and slow CxlMemLinks")
+    print("- config includes direct node 0 controllers and one shared slow CxlMemLink bottleneck")
     print("- default CXL fixed base latency is zero for both directions")
     print("- config contains SRAT/SLIT NUMA tables")
     print("- readfile embeds the pthread/mbind bandwidth-latency benchmark")
