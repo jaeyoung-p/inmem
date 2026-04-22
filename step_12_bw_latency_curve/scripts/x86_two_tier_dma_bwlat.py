@@ -127,8 +127,11 @@ parser.add_argument(
 )
 parser.add_argument(
     "--dma-duration",
-    default="10ms",
-    help="DMA injection duration. Default: 10ms.",
+    default="1s",
+    help=(
+        "DMA injection duration. Keep this comfortably longer than the whole "
+        "post-ROI benchmark window. Default: 1s."
+    ),
 )
 parser.add_argument(
     "--dma-block-size",
