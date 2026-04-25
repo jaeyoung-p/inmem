@@ -5,17 +5,20 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUTDIR="${OUTDIR:-${REPO_ROOT}/step_12_bw_latency_curve/artifacts/m5out_dma_parallel}"
-NODES="${NODES:-0 1}"
-DMA_RATES="${DMA_RATES:-0 8GiB/s 16GiB/s 24GiB/s 32GiB/s 64GiB/s 96GiB/s}"
+OUTDIR="${OUTDIR:-${REPO_ROOT}/step_12_bw_latency_curve/artifacts/m5out_dma_16x4_ddr5_4400_64k}"
+NODES="${NODES:-1}"
+DMA_TOTAL_RATES="${DMA_TOTAL_RATES:-8GiB/s 16GiB/s 32GiB/s 64GiB/s 128GiB/s 192GiB/s 224GiB/s 256GiB/s}"
+DMA_TARGET_PER_INJECTOR="${DMA_TARGET_PER_INJECTOR:-8GiB/s}"
 DMA_DURATION="${DMA_DURATION:-1s}"
-DMA_BLOCK_SIZE="${DMA_BLOCK_SIZE:-64}"
-DMA_INJECTORS="${DMA_INJECTORS:-1}"
+DMA_BLOCK_SIZE="${DMA_BLOCK_SIZE:-256}"
+DMA_MAX_OUTSTANDING="${DMA_MAX_OUTSTANDING:-2048}"
+DMA_INJECTORS="${DMA_INJECTORS:-}"
+RUBY_DIRECTORY_TBES="${RUBY_DIRECTORY_TBES:-4096}"
 LATENCY_MIB="${LATENCY_MIB:-64}"
-LATENCY_ITERS="${LATENCY_ITERS:-16384}"
+LATENCY_ITERS="${LATENCY_ITERS:-65536}"
 CPU_MHZ="${CPU_MHZ:-2100}"
 JOBS="${JOBS:-8}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-2700}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-999999}"
 RUN_CHECKER="${RUN_CHECKER:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 MAX_TICKS="${MAX_TICKS:-}"
@@ -33,6 +36,8 @@ sanitize_rate() {
 }
 
 mkdir -p "${OUTDIR}"
+rm -rf "${OUTDIR}"/node*_rate_*
+rm -f "${OUTDIR}/dma_bwlat_results.csv" "${OUTDIR}/dma_bwlat_results.png"
 
 job_file="$(mktemp)"
 trap 'rm -f "${job_file}"' EXIT
@@ -44,7 +49,10 @@ export CHECKER
 export VISUALIZER
 export DMA_DURATION
 export DMA_BLOCK_SIZE
+export DMA_MAX_OUTSTANDING
 export DMA_INJECTORS
+export DMA_TARGET_PER_INJECTOR
+export RUBY_DIRECTORY_TBES
 export LATENCY_MIB
 export LATENCY_ITERS
 export CPU_MHZ
@@ -54,7 +62,7 @@ export EXTRA_ARGS
 export MAX_TICKS
 
 for node in ${NODES}; do
-    for rate in ${DMA_RATES}; do
+    for rate in ${DMA_TOTAL_RATES}; do
         printf '%s\0%s\0' "${node}" "${rate}" >>"${job_file}"
     done
 done
@@ -62,10 +70,14 @@ done
 echo "Running parallel Step 12 DMA sweep"
 echo "outdir=${OUTDIR}"
 echo "nodes=${NODES}"
-echo "dma_rates=${DMA_RATES}"
+echo "rate_mode=aggregate"
+echo "dma_total_rates=${DMA_TOTAL_RATES}"
+echo "dma_target_per_injector=${DMA_TARGET_PER_INJECTOR}"
 echo "dma_duration=${DMA_DURATION}"
 echo "dma_block_size=${DMA_BLOCK_SIZE}"
-echo "dma_injectors=${DMA_INJECTORS}"
+echo "dma_max_outstanding=${DMA_MAX_OUTSTANDING}"
+echo "dma_injectors=${DMA_INJECTORS:-auto}"
+echo "ruby_directory_tbes=${RUBY_DIRECTORY_TBES}"
 echo "latency_mib=${LATENCY_MIB}"
 echo "latency_iters=${LATENCY_ITERS}"
 echo "cpu_mhz=${CPU_MHZ}"
@@ -87,6 +99,7 @@ sanitize_rate() {
 
 safe_rate="$(sanitize_rate "${rate}")"
 point_outdir="${OUTDIR}/node${node}_rate_${safe_rate}"
+rm -rf "${point_outdir}"
 mkdir -p "${point_outdir}"
 printf "%s\n" "${node}" >"${point_outdir}/node.txt"
 printf "%s\n" "${rate}" >"${point_outdir}/rate.txt"
@@ -100,11 +113,17 @@ run_cmd=(
     "--latency-mib" "${LATENCY_MIB}"
     "--latency-iters" "${LATENCY_ITERS}"
     "--cpu-mhz" "${CPU_MHZ}"
-    "--dma-rate" "${rate}"
     "--dma-duration" "${DMA_DURATION}"
     "--dma-block-size" "${DMA_BLOCK_SIZE}"
-    "--dma-injectors" "${DMA_INJECTORS}"
+    "--dma-max-outstanding" "${DMA_MAX_OUTSTANDING}"
+    "--ruby-directory-tbes" "${RUBY_DIRECTORY_TBES}"
+    "--dma-total-rate" "${rate}"
+    "--dma-target-per-injector" "${DMA_TARGET_PER_INJECTOR}"
 )
+
+if [[ -n "${DMA_INJECTORS}" ]]; then
+    run_cmd+=("--dma-injectors" "${DMA_INJECTORS}")
+fi
 
 if [[ -n "${MAX_TICKS}" ]]; then
     run_cmd+=("--max-ticks" "${MAX_TICKS}")
@@ -117,7 +136,7 @@ if [[ -n "${EXTRA_ARGS}" ]]; then
 fi
 
 {
-    echo "node=${node} rate=${rate}"
+    echo "node=${node} rate_mode=aggregate rate=${rate}"
     printf "cmd="
     printf "%q " "${run_cmd[@]}"
     echo
@@ -137,7 +156,7 @@ if [[ "${status}" == "0" && "${RUN_CHECKER}" == "1" ]]; then
             min_dma_injectors=0
             ;;
         *)
-            min_dma_injectors="${DMA_INJECTORS}"
+            min_dma_injectors="${DMA_INJECTORS:-1}"
             ;;
     esac
 
@@ -165,7 +184,7 @@ failed_count="$(
 )"
 
 echo "CSV: ${OUTDIR}/dma_bwlat_results.csv"
-echo "SVG: ${OUTDIR}/dma_bwlat_results.svg"
+echo "PNG: ${OUTDIR}/dma_bwlat_results.png"
 
 if [[ "${failed_count}" != "0" ]]; then
     echo "failed_points=${failed_count}"

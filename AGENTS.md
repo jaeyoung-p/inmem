@@ -60,11 +60,11 @@ x86 ACPI / NUMA exposure:
 
 Step 12 benchmark:
 
-- `step_12_bw_latency_curve/scripts/numa_bwlat.c`
-- `step_12_bw_latency_curve/scripts/guest_numa_bwlat.sh`
-- `step_12_bw_latency_curve/scripts/x86_two_tier_numa_bwlat.py`
-- `step_12_bw_latency_curve/scripts/check_bwlat_config.py`
-- `step_12_bw_latency_curve/scripts/visualize_bwlat.py`
+- `step_12_bw_latency_curve/scripts/numa_latency.c`
+- `step_12_bw_latency_curve/scripts/guest_dma_bwlat.sh`
+- `step_12_bw_latency_curve/scripts/x86_two_tier_dma_bwlat.py`
+- `step_12_bw_latency_curve/scripts/check_dma_bwlat_config.py`
+- `step_12_bw_latency_curve/scripts/visualize_dma_bwlat.py`
 
 ## Project Rules
 
@@ -107,9 +107,19 @@ scons build/X86/gem5.opt -j$(nproc)
 
 - Intel MLC is not available in this workspace; use the in-tree benchmark.
 - Step 12 timing must use TSC-cycle timing (`rdtsc`), not `clock_gettime()`.
-- Do not use `clflush` in the current TimingSimpleCPU x86 FS benchmark path.
+- Step 12 is frozen to one latency core plus DMA-side synthetic read
+  injection. Do not reintroduce worker-core bandwidth generation or the old
+  worker benchmark path.
+- The canonical Step 12 run is
+  `step_12_bw_latency_curve/scripts/run_dma_bwlat_parallel.sh` with aggregate
+  DMA rates, `DMA_TARGET_PER_INJECTOR=8GiB/s`, `RUBY_DIRECTORY_TBES=4096`,
+  and `LATENCY_ITERS=65536`.
+- Keep the guest benchmark source used by the DMA path:
+  `step_12_bw_latency_curve/scripts/numa_latency.c`. It is embedded into the
+  guest readfile and built inside the guest during each point.
+- Do not use `clflush` in the current X86O3CPU x86 FS benchmark path.
 - Keep the latency working set large enough to avoid cache-resident
-  `workers=0` latency measurements.
+  pointer-chase measurements.
 
 ### Git / Generated Output
 
@@ -124,13 +134,15 @@ scons build/X86/gem5.opt -j$(nproc)
 - After code changes, prefer the step-local checker scripts under `scripts/`.
 - For topology work, inspect generated `config.ini` and `config.json`.
 - For Linux NUMA work, validate SRAT/SLIT evidence in kernel logs and sysfs.
-- For Step 12, use `check_bwlat_config.py` after config generation and
-  `visualize_bwlat.py` after a full run.
-- For long validation cycles, make a local checkpoint commit before starting
-  build or smoke-test validation.
-- If delegating validation to a sub-agent, treat it as working in the same
-  local workspace and under the same approval model; do not assume it runs
-  outside the sandbox automatically.
+- For Step 12, use `check_dma_bwlat_config.py` after config generation and
+  `visualize_dma_bwlat.py` after a point run or a full sweep.
+- For validation expected to take more than about 5 minutes, or for any gem5
+  build plus full-system smoke-test sequence, make a local checkpoint commit
+  before starting validation, then launch a sub-agent to run and monitor that
+  validation while the main agent continues with non-overlapping work.
+- Treat validation sub-agents as working in the same local workspace and under
+  the same approval model; do not assume they run outside the sandbox
+  automatically.
 - In one shared workspace, do not edit files involved in the active build while
   compile is still in progress. If validation runs in the same workspace, wait
   until late compile/link or the smoke-test phase before resuming overlapping

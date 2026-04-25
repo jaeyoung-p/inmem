@@ -1,6 +1,6 @@
 # Large-Memory x86 / CXL NUMA Handoff
 
-Last updated: 2026-04-21
+Last updated: 2026-04-25
 
 This file is the current-status document. For repository structure and working
 rules, read `AGENTS.md`. For the roadmap and planned technical changes, read
@@ -21,8 +21,8 @@ Current repositories:
 
 Recent commits:
 
-- outer repo: `204cc9a`
-- gem5: `38a8a95792`
+- outer repo: `1bf2826`
+- gem5: `01143e5842`
 
 ## Current Memory Topology
 
@@ -34,17 +34,29 @@ Recent commits:
 | 1 | `[65GiB, 129GiB)` | CXL-like memory-only RAM |
 
 Node0 is one logical 8-channel local DDR5 node split only by the PCI hole.
+In this project, that "8-channel" statement means eight logical 64-bit DDR5
+channels. gem5's `DDR5_4400_4x8` interface models one 32-bit DDR5 subchannel,
+so node0 is represented as sixteen x32 subchannels. Because node0 has separate
+below-hole and above-hole memory objects for KVM-safe sparse RAM backing, the
+generated config contains sixteen low-range controllers plus sixteen
+high-range controllers, but each node0 address range is still 16-way
+interleaved.
 
-Important current caveat: node1 still uses two independent `CxlMemLink`
-objects. The next planned change is to replace that with one shared CXL
-bottleneck feeding two backing media controllers.
+Node1 now uses one shared `CxlMemLink` object as the host-side CXL.mem
+bottleneck feeding four backing `DDR5_4400_4x8` x32 subchannels. This
+represents two logical 64-bit DDR5 channels for the CXL-like memory node. All
+node1 directory paths traverse that shared link, so M2S/S2M queueing and
+serialization are truly shared across all node1 traffic.
 
-Another important current caveat: the current `CxlMemLink` timing model now
-counts 256B-mode traffic at 16B slot granularity, but it still does not model
-real flit packing interactions. Adding one extra 16B transfer to writes or
-read returns is achievable in the current model and will affect serialization,
-queue occupancy, and bandwidth, but it will not affect H-slot/G-slot packing
-choices or flit-fill efficiency.
+Current Step 12 bandwidth target convention:
+
+- node0 should behave like 8x DDR5-4400 logical 64-bit channels, with the
+  intended observed saturation region around 218 GB/s;
+- node1 should behave like 2x DDR5-4400 logical 64-bit channels behind the
+  shared CXL.mem link, with the intended observed saturation region around
+  52 GB/s;
+- do not "simplify" the topology back to 8 and 2 `DDR5_4400_4x8` objects,
+  because that models only half the intended 64-bit-channel width.
 
 ## Current CXL Calculation
 
@@ -56,100 +68,38 @@ Current implementation references:
 - `gem5/src/mem/cxl_mem_link.cc`
 
 The live model is a deliberately abstract `CxlMemLink`, not a full CXL Type 3
-device. It models:
+device. It now models:
 
-- one host-to-device FIFO (`M2S`)
-- one device-to-host FIFO (`S2M`)
-- 256B-mode slot-count-based serialization for CXL.cachemem payload
+- one shared host-to-device FIFO (`M2S`) across all node1 traffic
+- one shared device-to-host FIFO (`S2M`) across all node1 traffic
+- explicit internal message classes for:
+  - `M2S Req`
+  - `M2S RwD`
+  - `S2M NDR`
+  - `S2M DRS`
+- first-pass real 256B flit packing
+- rollover/spillover of data-bearing messages across flits
 - optional fixed per-direction base latency
 
 Current default parameters in the project are:
 
 - `flit_size_bytes = 256`
 - `bandwidth = 64GiB/s` per direction
-- `m2s_latency = 0ns`
-- `s2m_latency = 0ns`
+- `m2s_latency = 60ns`
+- `s2m_latency = 60ns`
 - `request_header_flits = 1`
 - `response_header_flits = 1`
 
-The code computes:
+The older slot-count-only calculation in this file is now obsolete. The live
+code no longer computes packet delay as a simple count of serialized 16B
+units; it builds actual 256B flits, tracks which message headers and implicit
+data slots fit in each emitted flit, and carries partially sent RwD/DRS
+messages across subsequent flits.
 
-```text
-256B mode:
-  serialization_unit = 16B slot
-  data_units(pkt)    = ceil(pkt_size / 16B)
-
-M2S request flits:
-  ordinary read  = request_header_flits
-  write / RwD    = request_header_flits + data_units(pkt)
-
-S2M response flits:
-  read response  = response_header_flits + data_units(pkt)
-  write response = response_header_flits
-
-serialization_delay(units) = ceil(units * 16B / link_bandwidth)
-```
-
-This matches the CXL 3.2 split between header slots and data slots:
-
-- `M2S Req` is header-only
-- `M2S RwD` is one header slot plus data slots
-- `S2M DRS` is one header slot plus data slots
-
-For the current Step 12 unloaded pointer-chase read path, the request is an
-ordinary 64B cacheline read:
-
-```text
-M2S Req units = 1
-S2M DRS units = 1 + ceil(64 / 16) = 5
-total CXL units per read = 6
-```
-
-At `64GiB/s`:
-
-```text
-1 unit = 16 B / 64 GiB/s = 0.233 ns
-6 units = 1.397 ns
-```
-
-So the current unloaded extra node1 latency should be approximately:
-
-```text
-delta(node1 - node0) ~= M2S Req serialization + S2M DRS serialization
-                     ~= 1 slot + (1 header slot + 4 data slots)
-                     ~= 6 slots
-                     ~= 1.397 ns
-```
-
-For a full 64B write on `M2S RwD`, the request-side serialization is:
-
-```text
-M2S RwD units = 1 header slot + 4 data slots = 5
-request-side serialization = 80 B / 64 GiB/s = 1.164 ns
-```
-
-This slot-based serialization is much smaller than the older whole-256B-token
-model. That means large unloaded node1 latency gaps will not come from payload
-size alone; they require fixed base latency and/or additional device pipeline
-modeling.
-
-Current boundary for "extra 16B" modeling:
-
-- for writes, one additional 16B unit can be charged on `M2S RwD`
-- for reads, one additional 16B unit can be charged on `S2M DRS`
-- this is achievable cleanly in the current model
-- this changes timing only; it does not change actual flit packing behavior
-
-The earlier fixed worker-0 smoke result:
-
-```text
-node0 = 82.066 ns
-node1 = 94.818 ns
-delta = 12.752 ns
-```
-
-was collected before this slot-based correction, so that delta should not be
-read as the current expected CXL serialization penalty.
+Practical consequence: added payload bytes can now change not only raw
+serialized transfer time but also flit count, rollover behavior, queue
+occupancy, and packing efficiency. The model is still intentionally first-pass
+and does not yet claim full spec-accurate packing coverage.
 
 ## Current CXL Missing Pieces
 
@@ -173,18 +123,10 @@ What the current model does not represent:
   - spec defines multiple independent CXL.mem channels
   - current gem5 object collapses traffic into one `M2S` FIFO and one `S2M`
     FIFO, with no BISnp/BIRsp behavior
-- physical-link sharing
-  - current node1 topology instantiates two independent `CxlMemLink` objects
-  - this behaves like two separate physical links and doubles available CXL
-    serialization bandwidth for node1
-  - the intended next step is one shared bottleneck feeding two backing media
-    controllers
 - 256B flit payload structure from Sections `4.3.4` and `6.2.3.1`
-  - spec flits include headers, CRC, FEC, packing rules, slot formats, and
-    message-rate limits per rolling 128B group
-  - current model treats traffic as serialized slot units and does not model
-    slot packing efficiency, rollover behavior, or protocol-specific message
-    placement inside flits
+  - the current model now has first-pass real 256B packing and rollover
+  - it still does not cover the full slot-format space, full trailer detail,
+    or every message-rate corner case from the spec
 - latency-optimized 256B flit halves from Section `6.2.3.1.2`
   - current model has no half-flit timing distinction
 - unified retry-buffer / replay behavior from Section `6.3`
@@ -200,31 +142,11 @@ What the current model does not represent:
     model
   - node1 remains ordinary Linux NUMA RAM from the guest point of view
 
-Practical consequence: today, unloaded node1 latency is almost entirely the
-serialization calculation above, while loaded node1 behavior is dominated by
-queueing plus the incorrect two-link topology. If unloaded node1 latency needs
-to be materially larger than about one request flit plus one response-with-data
-transfer, the model must add explicit fixed CXL base latency or a more detailed
-device/link pipeline.
-
-If the project needs extra data bytes to change flit-fill efficiency rather
-than only serialized transfer time, `CxlMemLink` must move from the current
-slot-count model to an actual 256B flit packer with message descriptors,
-slot-format selection, implicit data-slot tracking, and rollover.
-
-Minimum required implementation for that upgrade:
-
-- separate internal message types for:
-  - `M2S Req`
-  - `M2S RwD`
-  - `S2M NDR`
-  - `S2M DRS`
-- real 256B flit packing
-- rollover/spillover across flits
-
-Without those three pieces, an added extra slot only changes serialized timing;
-it does not change the bandwidth/latency curve through real CXL packing
-interactions.
+Practical consequence: node1 loaded behavior now reflects one shared host-side
+CXL bottleneck plus first-pass flit packing. The remaining fidelity gap is no
+longer "two links vs one link" or "slot counts vs flits"; it is the narrower
+set of unsupported protocol details and the lack of targeted packing
+micro-validation/calibration.
 
 ## Current Step 12 State
 
@@ -234,31 +156,81 @@ benchmark.
 Current safe defaults:
 
 - TSC-cycle timing via `rdtsc`
-- `BWL_WORKER_MIB=16`
-- `BWL_LATENCY_MIB=64`
-- `BWL_LATENCY_ITERS=65536`
+- KVM fast-forward, then `TimingSimpleCPU` at the ROI
+- Ruby `MESI_Two_Level` cache hierarchy
+- `L1I=32KiB`, `L1D=32KiB`, shared banked `L2=512KiB`
+- board clock `2.1GHz`
+- `LATENCY_MIB=64`
+- `LATENCY_ITERS=65536` in the shell helper unless overridden
+- `CPU_MHZ=2100`
+- aggregate DMA sweep mode via `DMA_TOTAL_RATES`
+- `DMA_TARGET_PER_INJECTOR=8GiB/s`
+- `DMA_BLOCK_SIZE=256`
+- `DMA_MAX_OUTSTANDING=2048`
+- `DMA_DURATION=1s`
+- `RUBY_DIRECTORY_TBES=4096`
+- node1-first aggregate offered-rate sweep
+  `8, 16, 32, 64, 128, 192, 224, 256 GiB/s`
+- default output directory
+  `step_12_bw_latency_curve/artifacts/m5out_dma_16x4_ddr5_4400_64k`
 
-Current helper runs:
+The user-facing DMA block size is 256B for range splitting and metadata.
+`PyTrafficGen` still emits legal 64B cache-line requests internally because
+`BaseTrafficGen` rejects block sizes larger than the system cache line. The
+offered byte rate is preserved by adjusting the request period.
 
-- `step_12_bw_latency_curve/scripts/run_16core_curve.sh`
-- `step_12_bw_latency_curve/scripts/run_32core_curve.sh`
+Canonical helper run:
+
+- `step_12_bw_latency_curve/scripts/run_dma_bwlat_parallel.sh`
+
+Step 12 has been intentionally cleaned up to this DMA-only path. The old
+serial sweep helper, worker-core configs, worker visualizers, worker benchmark
+sources, and worker disk image were removed. The benchmark source that must
+remain is `step_12_bw_latency_curve/scripts/numa_latency.c`; it is embedded
+into the guest readfile and built inside the guest for each point.
 
 Known invalid old Step 12 results:
 
 - old `clock_gettime()` runs after guest `refined-jiffies` fallback
-- old 4 MiB latency-buffer zero-worker runs
-- `clflush`-based runs
+- old worker-core loaded-latency runs
+- `clflush`-based runs from the older TimingSimpleCPU path
 
 ## Current Interpretation
 
-- Step 12 zero-worker latency is now protected against cache-resident pointer
-  chasing by the 64 MiB latency buffer.
-- Step 12 node1 loaded bandwidth is still affected by the older two-link node1
-  topology until the shared-link change lands.
-- Extra 16B payload accounting is feasible in the current `CxlMemLink`, but it
-  will not create real packing interactions until the flit-packer work lands.
-- If unloaded node1 latency still looks too close to node0 after the shared-link
-  change, the next lever is explicit fixed CXL base-latency calibration.
+- Step 12 now measures one latency probe core under DMA-injected read
+  bandwidth, not under additional worker CPU cores.
+- The DMA injectors preserve Ruby, directories, the shared node1 `CxlMemLink`,
+  memory controllers, and DRAM service behavior.
+- The DMA injectors intentionally do not model worker-core cache interaction.
+- The latency benchmark now enters ROI itself after pointer-chase setup, so
+  setup/placement work stays under KVM and only the measured loop plus active
+  injection run in detailed mode.
+- If unloaded node1 latency still looks too close to node0, the next lever is
+  explicit fixed CXL base-latency calibration.
+
+## Current Validation Status
+
+- incremental `build/X86/gem5.opt` builds cleanly
+- after the 16x4 DDR5_4400 subchannel update, a Step 12 config-generation
+  smoke produced:
+  - `36` `MemCtrl` objects
+  - `36` `DRAMInterface` objects
+  - exactly one `CxlMemLink`
+  - four node1 CXL-side memory ports/ranges
+- `step_12_bw_latency_curve/scripts/check_dma_bwlat_config.py` passed on that
+  generated config with `--expected-node 1 --min-dma-injectors 4`
+- Step 12 was hard-reset to the DMA-injected design described above
+- Step 12 currently switches from KVM fast-forward cores to `TimingSimpleCPU` at the ROI
+- Step 12 DMA config packaging smoke passed for the current `MESI_Two_Level`
+  one-core path
+- the old post-ROI failure was traced with `gdb` to stale `CxlMemLink` port
+  event callbacks after `std::vector` reallocation; that fix is pushed in gem5
+  commit `01143e5842`
+
+What remains open is narrower than before:
+
+- the canonical full sweep should be rerun after topology/protocol changes
+  using `step_12_bw_latency_curve/scripts/run_dma_bwlat_parallel.sh`
 
 ## Current Caveats
 

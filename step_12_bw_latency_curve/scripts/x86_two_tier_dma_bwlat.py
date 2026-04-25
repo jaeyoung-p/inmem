@@ -6,6 +6,7 @@
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import m5
@@ -18,8 +19,8 @@ from m5.util.convert import (
 
 from gem5.coherence_protocol import CoherenceProtocol
 from gem5.components.boards.large_mem_x86 import LargeMemoryX86Board
-from gem5.components.cachehierarchies.ruby.mesi_three_level_cache_hierarchy import (
-    MESIThreeLevelCacheHierarchy,
+from gem5.components.cachehierarchies.ruby.mesi_two_level_cache_hierarchy import (
+    MESITwoLevelCacheHierarchy,
 )
 from gem5.components.memory import TwoTierMemory
 from gem5.components.processors.cpu_types import CPUTypes
@@ -43,9 +44,45 @@ C_SOURCE = (THIS_DIR / "numa_latency.c").read_text()
 GUEST_SCRIPT = (THIS_DIR / "guest_dma_bwlat.sh").read_text()
 
 
-def is_zero_rate(rate_text: str) -> bool:
-    text = rate_text.strip().lower()
-    return text in {"0", "0b/s", "0kib/s", "0mib/s", "0gib/s"}
+def rate_to_Bps(rate_text: str) -> float:
+    return float(toMemoryBandwidth(rate_text))
+
+
+def format_rate_Bps(rate_Bps: float) -> str:
+    if rate_Bps == 0:
+        return "0"
+    if float(rate_Bps).is_integer():
+        return f"{int(rate_Bps)}B/s"
+    return f"{rate_Bps:.6f}".rstrip("0").rstrip(".") + "B/s"
+
+
+def split_dma_ranges(start: int, end: int, count: int, block_size: int):
+    if count <= 0:
+        return []
+
+    aligned_start = ((start + block_size - 1) // block_size) * block_size
+    aligned_end = (end // block_size) * block_size
+    usable = aligned_end - aligned_start
+    if usable < count * block_size:
+        return [(start, end) for _ in range(count)]
+
+    slice_size = (usable // count // block_size) * block_size
+    if slice_size < block_size:
+        return [(start, end) for _ in range(count)]
+
+    ranges = []
+    for index in range(count):
+        range_start = aligned_start + index * slice_size
+        range_end = aligned_end if index == count - 1 else range_start + slice_size
+        ranges.append((range_start, range_end))
+    return ranges
+
+
+def traffic_gen_block_size(requested_block_size: int) -> int:
+    # BaseTrafficGen requires block_size <= system cache line size. Keep the
+    # user-facing DMA block size for metadata/range alignment, but drive the
+    # same offered byte rate with legal cache-line-sized traffic requests.
+    return min(requested_block_size, 64)
 
 
 def traffic_sequence(
@@ -88,6 +125,17 @@ class Step12DmaBoard(LargeMemoryX86Board):
         ]
 
 
+class Step12MESITwoLevelCacheHierarchy(MESITwoLevelCacheHierarchy):
+    def __init__(self, *args, ruby_directory_tbes: int = 256, **kwargs):
+        self._step12_ruby_directory_tbes = ruby_directory_tbes
+        super().__init__(*args, **kwargs)
+
+    def incorporate_cache(self, board):
+        super().incorporate_cache(board)
+        for controller in self._directory_controllers:
+            controller.number_of_TBEs = self._step12_ruby_directory_tbes
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--max-ticks",
@@ -121,9 +169,20 @@ parser.add_argument(
     help="CPU frequency for rdtsc-to-ns conversion. Default: 2100.",
 )
 parser.add_argument(
-    "--dma-rate",
+    "--dma-total-rate",
     default="0",
-    help='Offered read rate per DMA injector, e.g. "8GiB/s". Use "0" for unloaded latency.',
+    help=(
+        'Aggregate offered DMA read rate across all injectors, e.g. "64GiB/s". '
+        'Use "0" for unloaded latency. Default: 0.'
+    ),
+)
+parser.add_argument(
+    "--dma-target-per-injector",
+    default="8GiB/s",
+    help=(
+        "Target per-injector offered rate for automatic injector count when "
+        "--dma-total-rate is set. Default: 8GiB/s."
+    ),
 )
 parser.add_argument(
     "--dma-duration",
@@ -136,14 +195,17 @@ parser.add_argument(
 parser.add_argument(
     "--dma-block-size",
     type=int,
-    default=64,
-    help="DMA injector request size in bytes. Default: 64.",
+    default=256,
+    help="DMA injector request size in bytes. Default: 256.",
 )
 parser.add_argument(
     "--dma-injectors",
     type=int,
-    default=1,
-    help="Number of DMA injectors. Default: 1.",
+    default=None,
+    help=(
+        "Number of DMA injectors. Default: automatic from --dma-total-rate "
+        "and --dma-target-per-injector."
+    ),
 )
 parser.add_argument(
     "--dma-progress-check",
@@ -153,8 +215,8 @@ parser.add_argument(
 parser.add_argument(
     "--dma-max-outstanding",
     type=int,
-    default=256,
-    help="Maximum outstanding DMA requests per injector. Default: 256.",
+    default=2048,
+    help="Maximum outstanding DMA requests per injector. Default: 2048.",
 )
 parser.add_argument(
     "--dma-post-idle",
@@ -166,6 +228,15 @@ parser.add_argument(
     action=argparse.BooleanOptionalAction,
     default=True,
     help="Enable PyTrafficGen backpressure-aware injection. Default: enabled.",
+)
+parser.add_argument(
+    "--ruby-directory-tbes",
+    type=int,
+    default=256,
+    help=(
+        "Number of transient buffer entries per MESI_Two_Level directory "
+        "controller. Default: 256."
+    ),
 )
 parser.add_argument(
     "--cxl-flit-size",
@@ -199,28 +270,55 @@ if args.cpu_mhz <= 0.0:
     raise ValueError("--cpu-mhz must be positive")
 if args.dma_block_size <= 0 or (args.dma_block_size % 64) != 0:
     raise ValueError("--dma-block-size must be a positive multiple of 64")
-if args.dma_injectors < 0:
+if args.dma_injectors is not None and args.dma_injectors < 0:
     raise ValueError("--dma-injectors must be non-negative")
 if args.dma_max_outstanding < 0:
     raise ValueError("--dma-max-outstanding must be non-negative")
-if not is_zero_rate(args.dma_rate) and args.dma_injectors == 0:
-    raise ValueError("--dma-injectors must be positive for nonzero dma-rate")
+if args.ruby_directory_tbes <= 0:
+    raise ValueError("--ruby-directory-tbes must be positive")
+
+dma_requested_injectors = args.dma_injectors
+dma_target_per_injector_Bps = rate_to_Bps(args.dma_target_per_injector)
+if dma_target_per_injector_Bps <= 0.0:
+    raise ValueError("--dma-target-per-injector must be positive")
+
+dma_total_rate_Bps = rate_to_Bps(args.dma_total_rate)
+if dma_total_rate_Bps < 0.0:
+    raise ValueError("--dma-total-rate must be non-negative")
+if dma_total_rate_Bps == 0.0:
+    dma_injector_count = 0
+elif args.dma_injectors is None:
+    dma_injector_count = math.ceil(
+        dma_total_rate_Bps / dma_target_per_injector_Bps
+    )
+else:
+    dma_injector_count = args.dma_injectors
+    if dma_injector_count <= 0:
+        raise ValueError(
+            "--dma-injectors must be positive for nonzero --dma-total-rate"
+        )
+dma_per_injector_rate_Bps = (
+    dma_total_rate_Bps / dma_injector_count if dma_injector_count else 0.0
+)
+dma_per_injector_rate = format_rate_Bps(dma_per_injector_rate_Bps)
+dma_total_rate = args.dma_total_rate
+
+dma_traffic_block_size = traffic_gen_block_size(args.dma_block_size)
 
 requires(
-    coherence_protocol_required=CoherenceProtocol.MESI_THREE_LEVEL,
+    coherence_protocol_required=CoherenceProtocol.MESI_TWO_LEVEL,
     kvm_required=True,
 )
 
-cache_hierarchy = MESIThreeLevelCacheHierarchy(
+cache_hierarchy = Step12MESITwoLevelCacheHierarchy(
     l1i_size="32KiB",
     l1i_assoc=8,
-    l1d_size="48KiB",
-    l1d_assoc=12,
-    l2_size="2MiB",
+    l1d_size="32KiB",
+    l1d_assoc=8,
+    l2_size="512KiB",
     l2_assoc=16,
-    l3_size="3840KiB",
-    l3_assoc=16,
-    num_l3_banks=16,
+    num_l2_banks=1,
+    ruby_directory_tbes=args.ruby_directory_tbes,
 )
 
 memory = TwoTierMemory(
@@ -238,20 +336,21 @@ else:
 dma_start = int(dma_range.start)
 dma_end = dma_start + dma_range.size()
 
-dma_injectors = []
-if not is_zero_rate(args.dma_rate):
-    dma_injectors = [
-        PyTrafficGen(
-            progress_check=args.dma_progress_check,
-            max_outstanding_reqs=args.dma_max_outstanding,
-            elastic_req=args.dma_elastic_req,
-        )
-        for _ in range(args.dma_injectors)
-    ]
+dma_injectors = [
+    PyTrafficGen(
+        progress_check=args.dma_progress_check,
+        max_outstanding_reqs=args.dma_max_outstanding,
+        elastic_req=args.dma_elastic_req,
+    )
+    for _ in range(dma_injector_count)
+]
+dma_ranges = split_dma_ranges(
+    dma_start, dma_end, len(dma_injectors), args.dma_block_size
+)
 
 processor = SimpleSwitchableProcessor(
     starting_core_type=CPUTypes.KVM,
-    switch_core_type=CPUTypes.O3,
+    switch_core_type=CPUTypes.TIMING,
     isa=ISA.X86,
     num_cores=1,
 )
@@ -260,7 +359,7 @@ for proc in processor.start:
     proc.core.usePerf = False
 
 board = Step12DmaBoard(
-    clk_freq="2.1GHz",
+    clk_freq=f"{args.cpu_mhz}MHz",
     processor=processor,
     memory=memory,
     cache_hierarchy=cache_hierarchy,
@@ -295,12 +394,20 @@ board.set_workload(workload)
 
 point_metadata = {
     "node": args.node,
-    "dma_rate": args.dma_rate,
+    "dma_rate": dma_per_injector_rate,
+    "dma_per_injector_rate": dma_per_injector_rate,
+    "dma_per_injector_rate_Bps": dma_per_injector_rate_Bps,
+    "dma_total_rate": dma_total_rate,
+    "dma_total_rate_Bps": dma_total_rate_Bps,
+    "dma_target_per_injector": args.dma_target_per_injector,
+    "dma_requested_injectors": dma_requested_injectors,
     "dma_duration": args.dma_duration,
     "dma_injectors": len(dma_injectors),
     "dma_block_size": args.dma_block_size,
+    "dma_traffic_block_size": dma_traffic_block_size,
     "dma_progress_check": args.dma_progress_check,
     "dma_max_outstanding": args.dma_max_outstanding,
+    "ruby_directory_tbes": args.ruby_directory_tbes,
     "dma_post_idle": args.dma_post_idle,
     "dma_elastic_req": args.dma_elastic_req,
     "latency_mib": args.latency_mib,
@@ -326,7 +433,7 @@ class KernelBootedExitHandler(ExitHandler, hypercall_num=1):
 class AfterBootStartedExitHandler(AfterBootExitHandler):
     @overrides(AfterBootExitHandler)
     def _process(self, simulator: "Simulator") -> None:
-        print("Second exit: after_boot.sh started; staying on KVM for guest build")
+        print("Second exit: after_boot.sh started; staying on KVM for guest setup")
 
     @overrides(AfterBootExitHandler)
     def _exit_simulation(self) -> bool:
@@ -337,29 +444,30 @@ class SwitchAtRoiExitHandler(ExitHandler, hypercall_num=4):
     @overrides(ExitHandler)
     def _process(self, simulator: "Simulator") -> None:
         print("Fourth exit: Step 12 ROI begins")
-        print("Switching from KVM to O3 CPU")
+        print("Switching from KVM to TimingSimpleCPU")
         simulator.switch_processor()
         print("Resetting stats at Step 12 ROI boundary")
         m5.stats.reset()
 
-        if not dma_injectors:
+        if not dma_injectors or dma_total_rate_Bps == 0.0:
             print("Starting Step 12 with no DMA injection")
             return
 
         print(
             f"Starting {len(dma_injectors)} DMA injector(s) at "
-            f"{args.dma_rate} each across "
+            f"{dma_per_injector_rate} each "
+            f"({dma_total_rate} total) across "
             f"[{hex(dma_start)}, {hex(dma_end)})"
         )
-        for injector in dma_injectors:
+        for injector, (range_start, range_end) in zip(dma_injectors, dma_ranges):
             injector.start(
                 traffic_sequence(
                     injector,
                     args.dma_duration,
-                    args.dma_rate,
-                    args.dma_block_size,
-                    dma_start,
-                    dma_end,
+                    dma_per_injector_rate,
+                    dma_traffic_block_size,
+                    range_start,
+                    range_end,
                     args.dma_post_idle,
                 )
             )
