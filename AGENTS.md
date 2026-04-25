@@ -128,6 +128,11 @@ scons build/X86/gem5.opt -j$(nproc)
 - Do not commit generated step `artifacts/`.
 - Treat `m5out*`, `artifacts/`, and `__pycache__` as generated output unless
   explicitly asked otherwise.
+- Never delete, overwrite, or auto-clean generated run outputs by default.
+  Sweep scripts must not run broad cleanup such as `rm -rf "${OUTDIR}"/node*_rate_*`
+  or remove result CSV/PNG files unless the user explicitly asks for a clean
+  rerun. Preserve expensive simulation outputs and write new runs to a fresh
+  output directory when in doubt.
 
 ### Validation
 

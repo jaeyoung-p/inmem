@@ -17,11 +17,14 @@ RUBY_DIRECTORY_TBES="${RUBY_DIRECTORY_TBES:-4096}"
 LATENCY_MIB="${LATENCY_MIB:-64}"
 LATENCY_ITERS="${LATENCY_ITERS:-65536}"
 CPU_MHZ="${CPU_MHZ:-2100}"
+AES_LATENCY="${AES_LATENCY:-0ns}"
 JOBS="${JOBS:-8}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-999999}"
 RUN_CHECKER="${RUN_CHECKER:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 MAX_TICKS="${MAX_TICKS:-}"
+CLEAN_OUTDIR="${CLEAN_OUTDIR:-0}"
+OVERWRITE_POINTS="${OVERWRITE_POINTS:-0}"
 
 GEM5="${REPO_ROOT}/gem5/build/X86/gem5.opt"
 CONFIG="${REPO_ROOT}/step_12_bw_latency_curve/scripts/x86_two_tier_dma_bwlat.py"
@@ -36,8 +39,10 @@ sanitize_rate() {
 }
 
 mkdir -p "${OUTDIR}"
-rm -rf "${OUTDIR}"/node*_rate_*
-rm -f "${OUTDIR}/dma_bwlat_results.csv" "${OUTDIR}/dma_bwlat_results.png"
+if [[ "${CLEAN_OUTDIR}" == "1" ]]; then
+    rm -rf "${OUTDIR}"/node*_rate_*
+    rm -f "${OUTDIR}/dma_bwlat_results.csv" "${OUTDIR}/dma_bwlat_results.png"
+fi
 
 job_file="$(mktemp)"
 trap 'rm -f "${job_file}"' EXIT
@@ -56,10 +61,12 @@ export RUBY_DIRECTORY_TBES
 export LATENCY_MIB
 export LATENCY_ITERS
 export CPU_MHZ
+export AES_LATENCY
 export TIMEOUT_SECONDS
 export RUN_CHECKER
 export EXTRA_ARGS
 export MAX_TICKS
+export OVERWRITE_POINTS
 
 for node in ${NODES}; do
     for rate in ${DMA_TOTAL_RATES}; do
@@ -81,8 +88,11 @@ echo "ruby_directory_tbes=${RUBY_DIRECTORY_TBES}"
 echo "latency_mib=${LATENCY_MIB}"
 echo "latency_iters=${LATENCY_ITERS}"
 echo "cpu_mhz=${CPU_MHZ}"
+echo "aes_latency=${AES_LATENCY}"
 echo "jobs=${JOBS}"
 echo "timeout_seconds=${TIMEOUT_SECONDS}"
+echo "clean_outdir=${CLEAN_OUTDIR}"
+echo "overwrite_points=${OVERWRITE_POINTS}"
 
 xargs -0 -r -n 2 -P "${JOBS}" bash -lc '
 set -euo pipefail
@@ -99,7 +109,15 @@ sanitize_rate() {
 
 safe_rate="$(sanitize_rate "${rate}")"
 point_outdir="${OUTDIR}/node${node}_rate_${safe_rate}"
-rm -rf "${point_outdir}"
+if [[ -e "${point_outdir}" ]]; then
+    if [[ "${OVERWRITE_POINTS}" == "1" ]]; then
+        rm -rf "${point_outdir}"
+    else
+        echo "Refusing to overwrite existing point directory: ${point_outdir}" >&2
+        echo "Set OVERWRITE_POINTS=1 for per-point overwrite or CLEAN_OUTDIR=1 for a full clean rerun." >&2
+        exit 2
+    fi
+fi
 mkdir -p "${point_outdir}"
 printf "%s\n" "${node}" >"${point_outdir}/node.txt"
 printf "%s\n" "${rate}" >"${point_outdir}/rate.txt"
@@ -119,6 +137,7 @@ run_cmd=(
     "--ruby-directory-tbes" "${RUBY_DIRECTORY_TBES}"
     "--dma-total-rate" "${rate}"
     "--dma-target-per-injector" "${DMA_TARGET_PER_INJECTOR}"
+    "--aes-latency" "${AES_LATENCY}"
 )
 
 if [[ -n "${DMA_INJECTORS}" ]]; then
@@ -163,6 +182,7 @@ if [[ "${status}" == "0" && "${RUN_CHECKER}" == "1" ]]; then
     python3 "${CHECKER}" \
         --expected-node "${node}" \
         --min-dma-injectors "${min_dma_injectors}" \
+        --expected-aes-latency-text "${AES_LATENCY}" \
         "${point_outdir}" >>"${point_outdir}/host.log" 2>&1 || status=$?
 fi
 

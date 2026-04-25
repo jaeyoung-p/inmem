@@ -260,6 +260,15 @@ parser.add_argument(
     default=256,
     help="CXL.mem FIFO depth per direction in flits. Default: 256.",
 )
+parser.add_argument(
+    "--aes-latency",
+    default="0ns",
+    help=(
+        "Fixed AES processing latency at each memory controller. Use 40ns "
+        "for the Step 13 encrypted-memory mode, or 0ns to disable it. "
+        "Default: 0ns."
+    ),
+)
 args = parser.parse_args()
 
 if args.latency_mib <= 0:
@@ -326,6 +335,7 @@ memory = TwoTierMemory(
     cxl_link_bandwidth=args.cxl_link_bandwidth,
     cxl_base_latency=args.cxl_base_latency,
     cxl_queue_depth_flits=args.cxl_queue_depth_flits,
+    aes_latency=args.aes_latency,
 )
 
 if args.node == 0:
@@ -413,6 +423,7 @@ point_metadata = {
     "latency_mib": args.latency_mib,
     "latency_iters": args.latency_iters,
     "cpu_mhz": args.cpu_mhz,
+    "aes_latency": args.aes_latency,
     "dma_range_start": dma_start,
     "dma_range_size": dma_range.size(),
 }
