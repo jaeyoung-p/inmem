@@ -18,6 +18,7 @@ LATENCY_MIB="${LATENCY_MIB:-64}"
 LATENCY_ITERS="${LATENCY_ITERS:-65536}"
 CPU_MHZ="${CPU_MHZ:-2100}"
 AES_LATENCY="${AES_LATENCY:-0ns}"
+CXL_EXTRA_DATA_SLOTS="${CXL_EXTRA_DATA_SLOTS:-0}"
 JOBS="${JOBS:-8}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-999999}"
 RUN_CHECKER="${RUN_CHECKER:-1}"
@@ -29,7 +30,8 @@ OVERWRITE_POINTS="${OVERWRITE_POINTS:-0}"
 GEM5="${REPO_ROOT}/gem5/build/X86/gem5.opt"
 CONFIG="${REPO_ROOT}/step_12_bw_latency_curve/scripts/x86_two_tier_dma_bwlat.py"
 CHECKER="${REPO_ROOT}/step_12_bw_latency_curve/scripts/check_dma_bwlat_config.py"
-VISUALIZER="${REPO_ROOT}/step_12_bw_latency_curve/scripts/visualize_dma_bwlat.py"
+VISUALIZER="${REPO_ROOT}/scripts/bw_vs_latency/visualize_dma_bwlat.py"
+FIGURE_OUTPUT_ROOT="${FIGURE_OUTPUT_ROOT:-${REPO_ROOT}/artifacts/figures/dma_bwlat}"
 
 sanitize_rate() {
     local text="$1"
@@ -52,6 +54,7 @@ export GEM5
 export CONFIG
 export CHECKER
 export VISUALIZER
+export FIGURE_OUTPUT_ROOT
 export DMA_DURATION
 export DMA_BLOCK_SIZE
 export DMA_MAX_OUTSTANDING
@@ -62,6 +65,7 @@ export LATENCY_MIB
 export LATENCY_ITERS
 export CPU_MHZ
 export AES_LATENCY
+export CXL_EXTRA_DATA_SLOTS
 export TIMEOUT_SECONDS
 export RUN_CHECKER
 export EXTRA_ARGS
@@ -89,10 +93,12 @@ echo "latency_mib=${LATENCY_MIB}"
 echo "latency_iters=${LATENCY_ITERS}"
 echo "cpu_mhz=${CPU_MHZ}"
 echo "aes_latency=${AES_LATENCY}"
+echo "cxl_extra_data_slots=${CXL_EXTRA_DATA_SLOTS}"
 echo "jobs=${JOBS}"
 echo "timeout_seconds=${TIMEOUT_SECONDS}"
 echo "clean_outdir=${CLEAN_OUTDIR}"
 echo "overwrite_points=${OVERWRITE_POINTS}"
+echo "figure_output_root=${FIGURE_OUTPUT_ROOT}"
 
 xargs -0 -r -n 2 -P "${JOBS}" bash -lc '
 set -euo pipefail
@@ -137,6 +143,7 @@ run_cmd=(
     "--ruby-directory-tbes" "${RUBY_DIRECTORY_TBES}"
     "--dma-total-rate" "${rate}"
     "--dma-target-per-injector" "${DMA_TARGET_PER_INJECTOR}"
+    "--cxl-extra-data-slots" "${CXL_EXTRA_DATA_SLOTS}"
     "--aes-latency" "${AES_LATENCY}"
 )
 
@@ -183,6 +190,7 @@ if [[ "${status}" == "0" && "${RUN_CHECKER}" == "1" ]]; then
         --expected-node "${node}" \
         --min-dma-injectors "${min_dma_injectors}" \
         --expected-aes-latency-text "${AES_LATENCY}" \
+        --expected-cxl-extra-data-slots "${CXL_EXTRA_DATA_SLOTS}" \
         "${point_outdir}" >>"${point_outdir}/host.log" 2>&1 || status=$?
 fi
 
@@ -195,7 +203,7 @@ date +%s >"${point_outdir}/end_time_epoch.txt"
 printf "%s\n" "${status}" >"${point_outdir}/status.txt"
 ' _ <"${job_file}"
 
-python3 "${VISUALIZER}" "${OUTDIR}"
+python3 "${VISUALIZER}" --output-root "${FIGURE_OUTPUT_ROOT}" "${OUTDIR}"
 
 failed_count="$(
     find "${OUTDIR}" -name status.txt -print0 \
@@ -203,8 +211,7 @@ failed_count="$(
         | awk '$1 != 0 {count++} END {print count+0}'
 )"
 
-echo "CSV: ${OUTDIR}/dma_bwlat_results.csv"
-echo "PNG: ${OUTDIR}/dma_bwlat_results.png"
+echo "Parsed CSV/PNG outputs are under: ${FIGURE_OUTPUT_ROOT}"
 
 if [[ "${failed_count}" != "0" ]]; then
     echo "failed_points=${failed_count}"

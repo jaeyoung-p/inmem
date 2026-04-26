@@ -2,9 +2,9 @@
 
 Last updated: 2026-04-25
 
-This file is the current-status document. For repository structure and working
-rules, read `AGENTS.md`. For the roadmap and planned technical changes, read
-`IMPLEMENTATION_PLAN.md`.
+This file is the current-status document. For repository structure and durable
+working rules, read `AGENTS.md`. `IMPLEMENTATION_PLAN.md` is historical only
+and should not be treated as the active roadmap.
 
 ## Current State
 
@@ -21,8 +21,8 @@ Current repositories:
 
 Recent commits:
 
-- outer repo: `1bf2826`
-- gem5: `01143e5842`
+- outer repo: `3f82e50`
+- gem5: `7235bae722`
 
 ## Current Memory Topology
 
@@ -219,13 +219,18 @@ Known invalid old Step 12 results:
   - four node1 CXL-side memory ports/ranges
 - `step_12_bw_latency_curve/scripts/check_dma_bwlat_config.py` passed on that
   generated config with `--expected-node 1 --min-dma-injectors 4`
-- Step 12 was hard-reset to the DMA-injected design described above
-- Step 12 currently switches from KVM fast-forward cores to `TimingSimpleCPU` at the ROI
+- Step 12 is frozen to the DMA-injected design described above
+- Step 12 currently switches from KVM fast-forward cores to
+  `TimingSimpleCPU` at the ROI
 - Step 12 DMA config packaging smoke passed for the current `MESI_Two_Level`
   one-core path
 - the old post-ROI failure was traced with `gdb` to stale `CxlMemLink` port
   event callbacks after `std::vector` reallocation; that fix is pushed in gem5
   commit `01143e5842`
+- the current frozen Step 12 visualizer moved to
+  `scripts/bw_vs_latency/visualize_dma_bwlat.py`
+- parsed per-step CSV/PNG outputs and the unified figure now live under
+  top-level `artifacts/figures/`
 
 What remains open is narrower than before:
 

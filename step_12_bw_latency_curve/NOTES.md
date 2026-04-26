@@ -35,5 +35,8 @@
 - The default user-facing DMA block size is 256B, but `PyTrafficGen` requests
   are clamped to 64B cache-line transfers internally while preserving the same
   offered byte rate.
+- Plotting helpers live in `scripts/bw_vs_latency/`. Parsed per-step CSV/PNG
+  outputs and unified figures are generated under top-level
+  `artifacts/figures/`, not in the step run directories.
 - Ignore old worker-core Step 12 results when comparing against the new DMA
   path.

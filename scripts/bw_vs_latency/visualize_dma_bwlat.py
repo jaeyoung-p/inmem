@@ -16,6 +16,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUTPUT_ROOT = REPO_ROOT / "artifacts/figures/dma_bwlat"
+
 LAT_RE = re.compile(
     r"LAT_RESULT node=(?P<node>\d+) "
     r"latency_ns=(?P<latency_ns>[-+0-9.eE]+) "
@@ -195,6 +198,22 @@ def equal_power_of_two_position(value: float) -> float:
     return 1.0 + math.log2(value)
 
 
+def output_dir_for(input_dir: Path, output_root: Path) -> Path:
+    resolved = input_dir.resolve()
+    try:
+        relative = resolved.relative_to(REPO_ROOT)
+        parts = relative.parts
+    except ValueError:
+        safe_name = resolved.as_posix().strip("/").replace("/", "__")
+        return output_root / safe_name
+
+    if "artifacts" in parts:
+        artifact_index = parts.index("artifacts")
+        parts = parts[:artifact_index] + parts[artifact_index + 1 :]
+
+    return output_root.joinpath(*parts)
+
+
 def write_csv(rows, outpath: Path):
     columns = [
         "node",
@@ -254,6 +273,15 @@ def write_plot(rows, outpath: Path):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("outdir", type=Path)
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help=(
+            "Directory root for generated CSV/PNG outputs. Default: "
+            f"{DEFAULT_OUTPUT_ROOT}"
+        ),
+    )
     args = parser.parse_args()
 
     rows = []
@@ -290,8 +318,10 @@ def main() -> int:
 
     rows.sort(key=lambda row: (row["node"], row["offered_rate_Bps"], row["point_dir"]))
 
-    csv_path = args.outdir / "dma_bwlat_results.csv"
-    png_path = args.outdir / "dma_bwlat_results.png"
+    output_dir = output_dir_for(args.outdir, args.output_root)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "dma_bwlat_results.csv"
+    png_path = output_dir / "dma_bwlat_results.png"
     write_csv(rows, csv_path)
     write_plot(rows, png_path)
     print(f"Wrote {csv_path}")

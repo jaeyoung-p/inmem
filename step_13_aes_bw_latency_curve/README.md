@@ -24,3 +24,12 @@ Override the AES latency when needed:
 AES_LATENCY=0ns step_13_aes_bw_latency_curve/scripts/run_aes_dma_bwlat_parallel.sh
 AES_LATENCY=40ns step_13_aes_bw_latency_curve/scripts/run_aes_dma_bwlat_parallel.sh
 ```
+
+Generate parsed CSV/PNG output for an existing Step 13 run with:
+
+```sh
+python3 scripts/bw_vs_latency/visualize_dma_bwlat.py \
+  step_13_aes_bw_latency_curve/artifacts/m5out_dma_aes_16x4_ddr5_4400_64k
+```
+
+Parsed outputs are written under top-level `artifacts/figures/`.

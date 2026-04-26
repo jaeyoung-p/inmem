@@ -62,6 +62,15 @@ def main() -> int:
             "This also checks point metadata."
         ),
     )
+    parser.add_argument(
+        "--expected-cxl-extra-data-slots",
+        type=int,
+        default=None,
+        help=(
+            "Optional expected CxlMemLink extra_data_slots value. This also "
+            "checks point metadata."
+        ),
+    )
     args = parser.parse_args()
 
     config_ini = args.outdir / "config.ini"
@@ -90,6 +99,7 @@ def main() -> int:
         "STEP12_LATENCY_ITERS",
         "STEP12_CPU_MHZ",
         "--aes-latency",
+        "--cxl-extra-data-slots",
     ):
         if needle not in script_text:
             raise SystemExit(f"missing script evidence: {needle}")
@@ -147,6 +157,20 @@ def main() -> int:
         if metadata.get("aes_latency") is None:
             raise SystemExit("missing aes_latency in point metadata")
 
+    if args.expected_cxl_extra_data_slots is not None:
+        expected = f"extra_data_slots={args.expected_cxl_extra_data_slots}"
+        if expected not in config:
+            raise SystemExit(f"missing CxlMemLink config evidence: {expected}")
+        if (
+            int(metadata.get("cxl_extra_data_slots", -1))
+            != args.expected_cxl_extra_data_slots
+        ):
+            raise SystemExit(
+                "point metadata cxl_extra_data_slots mismatch: expected "
+                f"{args.expected_cxl_extra_data_slots}, found "
+                f"{metadata.get('cxl_extra_data_slots')}"
+            )
+
     for needle in (
         "numa_latency.c",
         "guest_dma_bwlat.sh",
@@ -170,6 +194,11 @@ def main() -> int:
     print(f"- config contains at least {args.min_dma_injectors} PyTrafficGen injector(s)")
     if expected_aes_latency is not None:
         print(f"- all MemCtrl instances use aes_latency={expected_aes_latency}")
+    if args.expected_cxl_extra_data_slots is not None:
+        print(
+            "- shared CxlMemLink uses "
+            f"extra_data_slots={args.expected_cxl_extra_data_slots}"
+        )
     print("- readfile embeds the guest latency benchmark and ROI switch")
     return 0
 

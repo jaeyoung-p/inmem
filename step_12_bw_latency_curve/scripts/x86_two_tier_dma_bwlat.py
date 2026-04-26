@@ -261,6 +261,15 @@ parser.add_argument(
     help="CXL.mem FIFO depth per direction in flits. Default: 256.",
 )
 parser.add_argument(
+    "--cxl-extra-data-slots",
+    type=int,
+    default=0,
+    help=(
+        "Extra modeled 16B data slots added to each data-bearing CXL.mem "
+        "message. Default: 0."
+    ),
+)
+parser.add_argument(
     "--aes-latency",
     default="0ns",
     help=(
@@ -285,6 +294,8 @@ if args.dma_max_outstanding < 0:
     raise ValueError("--dma-max-outstanding must be non-negative")
 if args.ruby_directory_tbes <= 0:
     raise ValueError("--ruby-directory-tbes must be positive")
+if args.cxl_extra_data_slots < 0:
+    raise ValueError("--cxl-extra-data-slots must be non-negative")
 
 dma_requested_injectors = args.dma_injectors
 dma_target_per_injector_Bps = rate_to_Bps(args.dma_target_per_injector)
@@ -335,6 +346,7 @@ memory = TwoTierMemory(
     cxl_link_bandwidth=args.cxl_link_bandwidth,
     cxl_base_latency=args.cxl_base_latency,
     cxl_queue_depth_flits=args.cxl_queue_depth_flits,
+    cxl_extra_data_slots=args.cxl_extra_data_slots,
     aes_latency=args.aes_latency,
 )
 
@@ -424,6 +436,7 @@ point_metadata = {
     "latency_iters": args.latency_iters,
     "cpu_mhz": args.cpu_mhz,
     "aes_latency": args.aes_latency,
+    "cxl_extra_data_slots": args.cxl_extra_data_slots,
     "dma_range_start": dma_start,
     "dma_range_size": dma_range.size(),
 }

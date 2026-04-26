@@ -3,13 +3,14 @@
 ## Purpose
 
 This file is the stable project guide for agents working in `/home/cc/inmem`.
-It explains repository structure and working rules. It is not the current
-status document and not the implementation roadmap.
+It explains repository structure, durable architecture decisions, and working
+rules. It is not the current status document.
 
 Use:
 
 - `HANDOFF.md` for current state, recent decisions, and active context.
-- `IMPLEMENTATION_PLAN.md` for the technical roadmap and planned changes.
+- `IMPLEMENTATION_PLAN.md` is historical only. Do not treat it as the active
+  roadmap.
 
 ## Repository Structure
 
@@ -28,7 +29,7 @@ Top level:
 - `step_11_microbench_validation/`: small NUMA placement microbenchmarks.
 - `step_12_bw_latency_curve/`: bandwidth-versus-loaded-latency benchmark.
 - `HANDOFF.md`: current status and recent context.
-- `IMPLEMENTATION_PLAN.md`: roadmap and planned technical changes.
+- `IMPLEMENTATION_PLAN.md`: archived roadmap snapshot; stale by default.
 
 Typical step folder layout:
 
@@ -64,7 +65,7 @@ Step 12 benchmark:
 - `step_12_bw_latency_curve/scripts/guest_dma_bwlat.sh`
 - `step_12_bw_latency_curve/scripts/x86_two_tier_dma_bwlat.py`
 - `step_12_bw_latency_curve/scripts/check_dma_bwlat_config.py`
-- `step_12_bw_latency_curve/scripts/visualize_dma_bwlat.py`
+- `scripts/bw_vs_latency/visualize_dma_bwlat.py`
 
 ## Project Rules
 
@@ -102,6 +103,32 @@ scons build/X86/gem5.opt -j$(nproc)
 - Node0 is one logical local DDR5 node split only by the x86 PCI hole.
 - Keep node0 low/high interleaving identical unless the task explicitly changes
   the architecture.
+- Current guest physical RAM map:
+  - node0 low: `[0, 3GiB)`
+  - x86 PCI/platform hole: `[3GiB, 4GiB)`
+  - node0 high: `[4GiB, 65GiB)`
+  - node1 CXL-like memory-only RAM: `[65GiB, 129GiB)`
+- `DDR5_4400_4x8` is a 32-bit DDR5 subchannel model. The project’s channel
+  language usually means logical 64-bit DDR5 channels, so the current topology
+  uses 16 x32 subchannels for node0 and 4 x32 subchannels for node1.
+- The current Step 12 bandwidth targets are roughly 218 GB/s for node0
+  (8 logical DDR5-4400 channels) and 52 GB/s for node1 (2 logical
+  DDR5-4400 channels behind CXL).
+
+### CXL Model Rules
+
+- Node1 traffic uses one shared `CxlMemLink` bottleneck, not one link per
+  backing memory controller.
+- The live `CxlMemLink` model is deliberately abstract. It models shared
+  M2S/S2M queues, 256B flit packing for the supported CXL.mem message subset,
+  data-message rollover, serialization, queueing, and optional fixed base
+  latency.
+- The model does not implement guest-visible CXL enumeration, HDM decoder
+  programming, mailbox/device management, DAX/devdax/pmem, CXL.io, retry
+  replay correctness, QoS telemetry, BISnp/BIRsp, or full spec slot-format
+  coverage.
+- Default CXL link settings in the project are 256B flits, `64GiB/s`
+  per direction, and `60ns` fixed base latency per direction.
 
 ### Step 12 Rules
 
@@ -114,6 +141,12 @@ scons build/X86/gem5.opt -j$(nproc)
   `step_12_bw_latency_curve/scripts/run_dma_bwlat_parallel.sh` with aggregate
   DMA rates, `DMA_TARGET_PER_INJECTOR=8GiB/s`, `RUBY_DIRECTORY_TBES=4096`,
   and `LATENCY_ITERS=65536`.
+- The canonical Step 12 aggregate offered-rate sweep is:
+  `8GiB/s 16GiB/s 32GiB/s 64GiB/s 128GiB/s 192GiB/s 224GiB/s 256GiB/s`.
+- The Step 12 visualizer intentionally plots achieved injected DMA read
+  bandwidth from `stats.txt` against latency from the serial `LAT_RESULT` line.
+  It writes parsed CSV/PNG outputs under top-level `artifacts/figures/`, not
+  under a `step_*` directory.
 - Keep the guest benchmark source used by the DMA path:
   `step_12_bw_latency_curve/scripts/numa_latency.c`. It is embedded into the
   guest readfile and built inside the guest during each point.
@@ -140,7 +173,8 @@ scons build/X86/gem5.opt -j$(nproc)
 - For topology work, inspect generated `config.ini` and `config.json`.
 - For Linux NUMA work, validate SRAT/SLIT evidence in kernel logs and sysfs.
 - For Step 12, use `check_dma_bwlat_config.py` after config generation and
-  `visualize_dma_bwlat.py` after a point run or a full sweep.
+  `scripts/bw_vs_latency/visualize_dma_bwlat.py` after a point run or a full
+  sweep.
 - For validation expected to take more than about 5 minutes, or for any gem5
   build plus full-system smoke-test sequence, make a local checkpoint commit
   before starting validation, then launch a sub-agent to run and monitor that

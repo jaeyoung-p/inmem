@@ -58,7 +58,10 @@ controllers, 16 node0 high-range controllers, and 4 node1 controllers.
 - `scripts/x86_two_tier_dma_bwlat.py`: FS config, ROI switch, DMA injector start.
 - `scripts/check_dma_bwlat_config.py`: config/readfile checker for one point.
 - `scripts/run_dma_bwlat_parallel.sh`: canonical frozen Step 12 sweep helper.
-- `scripts/visualize_dma_bwlat.py`: aggregate CSV/PNG writer.
+- `../scripts/bw_vs_latency/visualize_dma_bwlat.py`: aggregate parsed CSV/PNG
+  writer.
+- `../scripts/bw_vs_latency/visualize_unified_dma_bwlat_csv.py`: unified
+  Step 12/13/14 plotter that reads generated CSVs.
 
 ## Defaults
 
@@ -74,7 +77,10 @@ controllers, 16 node0 high-range controllers, and 4 node1 controllers.
 - `DMA_MAX_OUTSTANDING=2048`;
 - `DMA_DURATION=1s`;
 - `RUBY_DIRECTORY_TBES=4096`;
-- default `OUTDIR=step_12_bw_latency_curve/artifacts/m5out_dma_16x4_ddr5_4400_64k`.
+- `CXL_EXTRA_DATA_SLOTS=0`;
+- default `OUTDIR=step_12_bw_latency_curve/artifacts/m5out_dma_16x4_ddr5_4400_64k`;
+- default parsed figure output root
+  `artifacts/figures/dma_bwlat`.
 
 Node0 DMA injection uses the large local high range `[4GiB, 65GiB)` so the
 injector sees one contiguous local-DDR5 span and does not need to span the x86
@@ -153,15 +159,27 @@ Aggregate CSV/PNG:
 
 ```sh
 cd /home/cc/inmem
-python3 step_12_bw_latency_curve/scripts/visualize_dma_bwlat.py \
+python3 scripts/bw_vs_latency/visualize_dma_bwlat.py \
   step_12_bw_latency_curve/artifacts/m5out_dma_bwlat
 ```
 
-The visualizer writes:
+The visualizer writes parsed outputs under top-level `artifacts/figures/`,
+preserving the source step/run name. For example:
 
-- `dma_bwlat_results.csv`
-- `dma_bwlat_results.png`, plotting achieved injected DMA read bandwidth
-  versus latency
+- `artifacts/figures/dma_bwlat/step_12_bw_latency_curve/m5out_dma_bwlat/dma_bwlat_results.csv`
+- `artifacts/figures/dma_bwlat/step_12_bw_latency_curve/m5out_dma_bwlat/dma_bwlat_results.png`
+
+Generate the unified Step 12/13/14 figure after the per-step CSVs exist:
+
+```sh
+cd /home/cc/inmem
+python3 scripts/bw_vs_latency/visualize_unified_dma_bwlat_csv.py
+```
+
+The unified plotter writes:
+
+- `artifacts/figures/unified_dma_bwlat.csv`
+- `artifacts/figures/unified_dma_bwlat.png`
 
 Each CSV row includes:
 
