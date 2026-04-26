@@ -278,6 +278,28 @@ parser.add_argument(
         "Default: 0ns."
     ),
 )
+parser.add_argument(
+    "--integrity-mac-enable",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help=(
+        "Enable fake host-side integrity MAC timing requests. This issues one "
+        "additional hidden MAC request for each data request below the cache "
+        "hierarchy. Default: disabled."
+    ),
+)
+parser.add_argument(
+    "--integrity-mac-line-bytes",
+    type=int,
+    default=64,
+    help="Protected data line size for fake integrity MAC modeling. Default: 64.",
+)
+parser.add_argument(
+    "--integrity-mac-bytes-per-line",
+    type=int,
+    default=8,
+    help="Hidden MAC bytes per protected data line. Default: 8.",
+)
 args = parser.parse_args()
 
 if args.latency_mib <= 0:
@@ -296,6 +318,15 @@ if args.ruby_directory_tbes <= 0:
     raise ValueError("--ruby-directory-tbes must be positive")
 if args.cxl_extra_data_slots < 0:
     raise ValueError("--cxl-extra-data-slots must be non-negative")
+if args.integrity_mac_line_bytes <= 0:
+    raise ValueError("--integrity-mac-line-bytes must be positive")
+if args.integrity_mac_bytes_per_line <= 0:
+    raise ValueError("--integrity-mac-bytes-per-line must be positive")
+if args.integrity_mac_enable and args.cxl_extra_data_slots:
+    raise ValueError(
+        "--integrity-mac-enable and --cxl-extra-data-slots model alternative "
+        "experiments and should not be used together"
+    )
 
 dma_requested_injectors = args.dma_injectors
 dma_target_per_injector_Bps = rate_to_Bps(args.dma_target_per_injector)
@@ -348,6 +379,9 @@ memory = TwoTierMemory(
     cxl_queue_depth_flits=args.cxl_queue_depth_flits,
     cxl_extra_data_slots=args.cxl_extra_data_slots,
     aes_latency=args.aes_latency,
+    integrity_mac_enable=args.integrity_mac_enable,
+    integrity_mac_line_bytes=args.integrity_mac_line_bytes,
+    integrity_mac_bytes_per_line=args.integrity_mac_bytes_per_line,
 )
 
 if args.node == 0:
@@ -437,6 +471,9 @@ point_metadata = {
     "cpu_mhz": args.cpu_mhz,
     "aes_latency": args.aes_latency,
     "cxl_extra_data_slots": args.cxl_extra_data_slots,
+    "integrity_mac_enable": args.integrity_mac_enable,
+    "integrity_mac_line_bytes": args.integrity_mac_line_bytes,
+    "integrity_mac_bytes_per_line": args.integrity_mac_bytes_per_line,
     "dma_range_start": dma_start,
     "dma_range_size": dma_range.size(),
 }

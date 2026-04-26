@@ -78,6 +78,9 @@ controllers, 16 node0 high-range controllers, and 4 node1 controllers.
 - `DMA_DURATION=1s`;
 - `RUBY_DIRECTORY_TBES=4096`;
 - `CXL_EXTRA_DATA_SLOTS=0`;
+- `INTEGRITY_MAC_ENABLE=0`;
+- `INTEGRITY_MAC_LINE_BYTES=64`;
+- `INTEGRITY_MAC_BYTES_PER_LINE=8`;
 - default `OUTDIR=step_12_bw_latency_curve/artifacts/m5out_dma_16x4_ddr5_4400_64k`;
 - default parsed figure output root
   `artifacts/figures/dma_bwlat`.
@@ -85,6 +88,13 @@ controllers, 16 node0 high-range controllers, and 4 node1 controllers.
 Node0 DMA injection uses the large local high range `[4GiB, 65GiB)` so the
 injector sees one contiguous local-DDR5 span and does not need to span the x86
 PCI hole.
+
+The config also carries Step 15's optional fake integrity MAC timing knobs.
+Baseline Step 12 leaves them disabled. When enabled, the host-side integrity
+layer emits one internal MAC request in addition to each protected data request.
+For node1, both requests traverse the shared `CxlMemLink`. This is an
+alternative experiment to Step 14's extra CXL data-slot model, so
+`--integrity-mac-enable` is rejected when `--cxl-extra-data-slots` is nonzero.
 
 `--dma-total-rate` is the Step 12 rate knob and means aggregate offered DMA
 read rate across all injectors. The config automatically chooses enough

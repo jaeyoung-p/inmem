@@ -71,6 +71,16 @@ def main() -> int:
             "checks point metadata."
         ),
     )
+    parser.add_argument(
+        "--expected-integrity-mac-enable",
+        type=int,
+        choices=[0, 1],
+        default=None,
+        help=(
+            "Optional expected integrity MAC enable state, as 0 or 1. This "
+            "checks IntegrityMemLink config objects and point metadata."
+        ),
+    )
     args = parser.parse_args()
 
     config_ini = args.outdir / "config.ini"
@@ -100,6 +110,7 @@ def main() -> int:
         "STEP12_CPU_MHZ",
         "--aes-latency",
         "--cxl-extra-data-slots",
+        "--integrity-mac-enable",
     ):
         if needle not in script_text:
             raise SystemExit(f"missing script evidence: {needle}")
@@ -171,6 +182,26 @@ def main() -> int:
                 f"{metadata.get('cxl_extra_data_slots')}"
             )
 
+    if args.expected_integrity_mac_enable is not None:
+        expected_enabled = bool(args.expected_integrity_mac_enable)
+        if bool(metadata.get("integrity_mac_enable")) != expected_enabled:
+            raise SystemExit(
+                "point metadata integrity_mac_enable mismatch: expected "
+                f"{expected_enabled}, found "
+                f"{metadata.get('integrity_mac_enable')}"
+            )
+        integrity_count = config.count("type=IntegrityMemLink")
+        if expected_enabled and integrity_count != 36:
+            raise SystemExit(
+                f"expected thirty-six IntegrityMemLink instances, found "
+                f"{integrity_count}"
+            )
+        if not expected_enabled and integrity_count != 0:
+            raise SystemExit(
+                f"expected no IntegrityMemLink instances, found "
+                f"{integrity_count}"
+            )
+
     for needle in (
         "numa_latency.c",
         "guest_dma_bwlat.sh",
@@ -199,6 +230,8 @@ def main() -> int:
             "- shared CxlMemLink uses "
             f"extra_data_slots={args.expected_cxl_extra_data_slots}"
         )
+    if args.expected_integrity_mac_enable is not None:
+        print(f"- integrity MAC enabled={bool(args.expected_integrity_mac_enable)}")
     print("- readfile embeds the guest latency benchmark and ROI switch")
     return 0
 

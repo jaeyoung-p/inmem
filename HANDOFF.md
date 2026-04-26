@@ -1,6 +1,6 @@
 # Large-Memory x86 / CXL NUMA Handoff
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 This file is the current-status document. For repository structure and durable
 working rules, read `AGENTS.md`. `IMPLEMENTATION_PLAN.md` is historical only
@@ -21,8 +21,8 @@ Current repositories:
 
 Recent commits:
 
-- outer repo: `3f82e50`
-- gem5: `7235bae722`
+- outer repo: `312757f`
+- gem5: `d6a05d27c7`
 
 ## Current Memory Topology
 
@@ -243,3 +243,33 @@ What remains open is narrower than before:
   interface capacity is larger than assigned interleaved subranges.
 - `TwoTierMemory` is a historical name; node0 is now one local memory node.
 - `LargeMemoryX86Board` currently supports only the two-node policy used here.
+
+## Current Step 15 Work: Integrity MAC Timing
+
+Step 15 now has a first-pass fake integrity timing model documented in:
+
+- `step_15_integrity_mac/README.md`
+
+The model is defaults-off and uses the same `build/X86/gem5.opt` binary, disk
+image, and Step 12 benchmark flow. Enable it with `--integrity-mac-enable` or
+with `step_15_integrity_mac/scripts/run_integrity_mac_dma_bwlat_parallel.sh`.
+
+The implementation adds a host-side `IntegrityMemLink` below the guest-visible
+cache hierarchy and above the memory targets. For each protected read/write it
+issues the original data request plus one fake MAC request. For node1, both the
+data request and MAC request enter the shared `CxlMemLink`, so this is not the
+same model as Step 14's `--cxl-extra-data-slots`. The config script rejects
+using both knobs together.
+
+Current modeling boundary: MAC packets use `Request::NO_ACCESS` and the data
+packet's address as a timing surrogate. `MemCtrl` consumes the normal timing
+path but skips backing-memory access for these packets. This keeps MAC traffic
+out of guest caches and prevents guest memory corruption, but it does not yet
+reserve or route a true hidden physical MAC address range.
+
+Step 12 `PyTrafficGen` injected traffic also incurs Step 15 MAC requests in the
+current model. A simple PyTrafficGen-only bypass below Ruby is not reliable:
+the Ruby directory recreates memory-side packets with the directory
+controller's requestor ID before they reach `IntegrityMemLink`. Treat plotted
+DMA bandwidth as data-only offered/achieved bandwidth; for integrity pressure,
+account for MAC bytes separately or use an effective data-plus-MAC bandwidth.

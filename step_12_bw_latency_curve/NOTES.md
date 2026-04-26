@@ -38,5 +38,8 @@
 - Plotting helpers live in `scripts/bw_vs_latency/`. Parsed per-step CSV/PNG
   outputs and unified figures are generated under top-level
   `artifacts/figures/`, not in the step run directories.
+- Step 15's fake integrity MAC mode is exposed through the same Step 12 config
+  and sweep helper, but remains disabled by default. It should not be combined
+  with `CXL_EXTRA_DATA_SLOTS`; the two knobs represent different experiments.
 - Ignore old worker-core Step 12 results when comparing against the new DMA
   path.

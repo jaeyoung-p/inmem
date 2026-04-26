@@ -19,6 +19,9 @@ LATENCY_ITERS="${LATENCY_ITERS:-65536}"
 CPU_MHZ="${CPU_MHZ:-2100}"
 AES_LATENCY="${AES_LATENCY:-0ns}"
 CXL_EXTRA_DATA_SLOTS="${CXL_EXTRA_DATA_SLOTS:-0}"
+INTEGRITY_MAC_ENABLE="${INTEGRITY_MAC_ENABLE:-0}"
+INTEGRITY_MAC_LINE_BYTES="${INTEGRITY_MAC_LINE_BYTES:-64}"
+INTEGRITY_MAC_BYTES_PER_LINE="${INTEGRITY_MAC_BYTES_PER_LINE:-8}"
 JOBS="${JOBS:-8}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-999999}"
 RUN_CHECKER="${RUN_CHECKER:-1}"
@@ -66,6 +69,9 @@ export LATENCY_ITERS
 export CPU_MHZ
 export AES_LATENCY
 export CXL_EXTRA_DATA_SLOTS
+export INTEGRITY_MAC_ENABLE
+export INTEGRITY_MAC_LINE_BYTES
+export INTEGRITY_MAC_BYTES_PER_LINE
 export TIMEOUT_SECONDS
 export RUN_CHECKER
 export EXTRA_ARGS
@@ -94,6 +100,9 @@ echo "latency_iters=${LATENCY_ITERS}"
 echo "cpu_mhz=${CPU_MHZ}"
 echo "aes_latency=${AES_LATENCY}"
 echo "cxl_extra_data_slots=${CXL_EXTRA_DATA_SLOTS}"
+echo "integrity_mac_enable=${INTEGRITY_MAC_ENABLE}"
+echo "integrity_mac_line_bytes=${INTEGRITY_MAC_LINE_BYTES}"
+echo "integrity_mac_bytes_per_line=${INTEGRITY_MAC_BYTES_PER_LINE}"
 echo "jobs=${JOBS}"
 echo "timeout_seconds=${TIMEOUT_SECONDS}"
 echo "clean_outdir=${CLEAN_OUTDIR}"
@@ -145,7 +154,15 @@ run_cmd=(
     "--dma-target-per-injector" "${DMA_TARGET_PER_INJECTOR}"
     "--cxl-extra-data-slots" "${CXL_EXTRA_DATA_SLOTS}"
     "--aes-latency" "${AES_LATENCY}"
+    "--integrity-mac-line-bytes" "${INTEGRITY_MAC_LINE_BYTES}"
+    "--integrity-mac-bytes-per-line" "${INTEGRITY_MAC_BYTES_PER_LINE}"
 )
+
+if [[ "${INTEGRITY_MAC_ENABLE}" == "1" ]]; then
+    run_cmd+=("--integrity-mac-enable")
+else
+    run_cmd+=("--no-integrity-mac-enable")
+fi
 
 if [[ -n "${DMA_INJECTORS}" ]]; then
     run_cmd+=("--dma-injectors" "${DMA_INJECTORS}")
@@ -191,6 +208,7 @@ if [[ "${status}" == "0" && "${RUN_CHECKER}" == "1" ]]; then
         --min-dma-injectors "${min_dma_injectors}" \
         --expected-aes-latency-text "${AES_LATENCY}" \
         --expected-cxl-extra-data-slots "${CXL_EXTRA_DATA_SLOTS}" \
+        --expected-integrity-mac-enable "${INTEGRITY_MAC_ENABLE}" \
         "${point_outdir}" >>"${point_outdir}/host.log" 2>&1 || status=$?
 fi
 

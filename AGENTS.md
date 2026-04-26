@@ -28,6 +28,7 @@ Top level:
 - `step_10_kvm_to_timing_switch/`: KVM-to-Timing ROI switch flow.
 - `step_11_microbench_validation/`: small NUMA placement microbenchmarks.
 - `step_12_bw_latency_curve/`: bandwidth-versus-loaded-latency benchmark.
+- `step_15_integrity_mac/`: fake host-side integrity MAC timing experiment.
 - `HANDOFF.md`: current status and recent context.
 - `IMPLEMENTATION_PLAN.md`: archived roadmap snapshot; stale by default.
 
@@ -52,6 +53,9 @@ CXL path:
 - `gem5/src/mem/CxlMemLink.py`
 - `gem5/src/mem/cxl_mem_link.hh`
 - `gem5/src/mem/cxl_mem_link.cc`
+- `gem5/src/mem/IntegrityMemLink.py`
+- `gem5/src/mem/integrity_mem_link.hh`
+- `gem5/src/mem/integrity_mem_link.cc`
 
 x86 ACPI / NUMA exposure:
 
@@ -129,6 +133,15 @@ scons build/X86/gem5.opt -j$(nproc)
   coverage.
 - Default CXL link settings in the project are 256B flits, `64GiB/s`
   per direction, and `60ns` fixed base latency per direction.
+- Step 15 integrity MAC timing is a host-side, defaults-off model. It issues a
+  second fake MAC request for protected reads/writes below the guest cache
+  hierarchy. For node1, the data and MAC requests both traverse the shared
+  `CxlMemLink`. Do not combine this mode with Step 14's
+  `--cxl-extra-data-slots`; they are alternative experiments.
+- The current Step 15 implementation uses `Request::NO_ACCESS` timing packets
+  at the data packet address, so MAC traffic contends with the same downstream
+  memory path without touching backing bytes or entering guest caches. It does
+  not yet reserve a true hidden MAC physical address range.
 
 ### Step 12 Rules
 
