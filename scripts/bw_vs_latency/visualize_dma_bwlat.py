@@ -36,9 +36,8 @@ def point_dirs(root: Path):
         yield root
         return
 
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "step12_point.json").is_file():
-            yield child
+    for point_json in sorted(root.rglob("step12_point.json")):
+        yield point_json.parent
 
 
 def parse_rate_Bps(rate_text: str) -> float:
@@ -242,7 +241,7 @@ def write_plot(rows, outpath: Path):
 
     for node in sorted({row["node"] for row in rows}):
         node_rows = [row for row in rows if row["node"] == node]
-        node_rows.sort(key=lambda row: row["achieved_bandwidth_gib_s"])
+        node_rows.sort(key=lambda row: (row["offered_rate_Bps"], row["point_dir"]))
         ax.plot(
             [
                 equal_power_of_two_position(row["achieved_bandwidth_gib_s"])
@@ -324,6 +323,7 @@ def main() -> int:
     png_path = output_dir / "dma_bwlat_results.png"
     write_csv(rows, csv_path)
     write_plot(rows, png_path)
+    print(f"Parsed {len(rows)} point(s)")
     print(f"Wrote {csv_path}")
     print(f"Wrote {png_path}")
     return 0

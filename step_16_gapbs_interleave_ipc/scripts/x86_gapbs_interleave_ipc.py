@@ -2,7 +2,7 @@
 # Copyright (c) 2026
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Run one GAPBS-style PageRank SpMV interleave IPC point."""
+"""Run one GAPBS-style interleave IPC point."""
 
 import argparse
 import json
@@ -34,8 +34,17 @@ from gem5.utils.requires import requires
 
 NUMACTL_DISK_IMAGE = Path.home() / ".cache/gem5/x86-ubuntu-24.04-numactl.img"
 THIS_DIR = Path(__file__).resolve().parent
-BENCH_SOURCE = (THIS_DIR / "gapbs_pr_spmv_roi.cc").read_text()
+COMMON_HEADER = (THIS_DIR / "gapbs_roi_common.hh").read_text()
 GUEST_SCRIPT = (THIS_DIR / "guest_gapbs_ipc.sh").read_text()
+
+KERNEL_SOURCES = {
+    "pr_spmv": "gapbs_pr_spmv_roi.cc",
+    "pr": "gapbs_pr_roi.cc",
+    "bc": "gapbs_bc_roi.cc",
+    "sssp": "gapbs_sssp_roi.cc",
+    "cc": "gapbs_cc_roi.cc",
+    "tc": "gapbs_tc_roi.cc",
+}
 
 VARIANTS = {
     "baseline": {
@@ -53,10 +62,17 @@ VARIANTS = {
         "integrity_mac_enable": True,
         "cxl_extra_data_slots": 0,
     },
-    "aes_extra_slot": {
+    "inmem": {
         "aes_latency": "40ns",
         "integrity_mac_enable": False,
         "cxl_extra_data_slots": 1,
+    },
+    "inmem_low": {
+        "aes_latency": "40ns",
+        "integrity_mac_enable": False,
+        "cxl_extra_data_slots": 1,
+        "l3_size": "1792KiB",
+        "l3_assoc": 14,
     },
 }
 
@@ -94,17 +110,17 @@ parser.add_argument(
     "--gapbs-trials",
     type=int,
     default=1,
-    help="Measured PageRank SpMV trials passed as GAPBS -n. Default: 1.",
+    help="Measured kernel trials passed as GAPBS -n. Default: 1.",
 )
 parser.add_argument(
     "--gapbs-max-iters",
     type=int,
     default=20,
-    help="Maximum PageRank iterations passed as GAPBS -i. Default: 20.",
+    help="Maximum kernel iterations or levels passed as GAPBS -i. Default: 20.",
 )
 parser.add_argument(
     "--gapbs-kernel",
-    choices=["pr_spmv"],
+    choices=sorted(KERNEL_SOURCES),
     default="pr_spmv",
     help="Graph kernel to run. Default: pr_spmv.",
 )
@@ -152,7 +168,18 @@ parser.add_argument(
     default=0,
     help=(
         "Optional instruction limit scheduled immediately after the ROI CPU "
-        "switch. A value of 0 disables the limit. Default: 0."
+        "switch, or after --roi-warmup-insts when warmup is enabled. "
+        "A value of 0 disables the measured instruction cap. Default: 0."
+    ),
+)
+parser.add_argument(
+    "--roi-warmup-insts",
+    type=int,
+    default=0,
+    help=(
+        "Optional unmeasured committed-instruction warmup after switching to "
+        "the ROI CPU. Stats are reset again after this limit, then "
+        "--roi-max-insts is scheduled if nonzero. Default: 0."
     ),
 )
 parser.add_argument(
@@ -251,6 +278,8 @@ if args.ruby_directory_tbes <= 0:
     raise ValueError("--ruby-directory-tbes must be positive")
 if args.roi_max_insts < 0:
     raise ValueError("--roi-max-insts must be non-negative")
+if args.roi_warmup_insts < 0:
+    raise ValueError("--roi-warmup-insts must be non-negative")
 if args.l1i_assoc <= 0 or args.l1d_assoc <= 0:
     raise ValueError("L1 associativity values must be positive")
 if args.l2_assoc <= 0 or args.l3_assoc <= 0:
@@ -262,6 +291,9 @@ variant = VARIANTS[args.variant]
 if variant["integrity_mac_enable"] and variant["cxl_extra_data_slots"]:
     raise ValueError("integrity MAC and extra CXL data slots must not be combined")
 omp_threads = args.omp_threads if args.omp_threads is not None else args.num_cores
+effective_l3_size = variant.get("l3_size", args.l3_size)
+effective_l3_assoc = variant.get("l3_assoc", args.l3_assoc)
+bench_source = (THIS_DIR / KERNEL_SOURCES[args.gapbs_kernel]).read_text()
 
 requires(
     coherence_protocol_required=CoherenceProtocol.MESI_THREE_LEVEL,
@@ -275,8 +307,8 @@ cache_hierarchy = Step16MESIThreeLevelCacheHierarchy(
     l1d_assoc=args.l1d_assoc,
     l2_size=args.l2_size,
     l2_assoc=args.l2_assoc,
-    l3_size=args.l3_size,
-    l3_assoc=args.l3_assoc,
+    l3_size=effective_l3_size,
+    l3_assoc=effective_l3_assoc,
     num_l3_banks=args.num_l3_banks,
     ruby_directory_tbes=args.ruby_directory_tbes,
 )
@@ -319,8 +351,27 @@ workload.set_parameter(
 
 readfile_contents = f"""#!/bin/bash
 set -eux
-cat > /tmp/gapbs_pr_spmv_roi.cc <<'STEP16_CC_EOF'
-{BENCH_SOURCE}
+if [[ -r /proc/sys/kernel/numa_balancing ]]; then
+    guest_numa_balancing="$(cat /proc/sys/kernel/numa_balancing)"
+    if [[ "$guest_numa_balancing" != "0" ]]; then
+        if [[ -w /proc/sys/kernel/numa_balancing ]]; then
+            echo 0 > /proc/sys/kernel/numa_balancing
+        elif command -v sudo >/dev/null 2>&1; then
+            if ! printf '%s\n' 'gem5' | sudo -S -p '' \
+                sh -c 'echo 0 > /proc/sys/kernel/numa_balancing'; then
+                echo "warning: failed to disable guest NUMA balancing with sudo" >&2
+            fi
+        else
+            echo "warning: cannot disable guest NUMA balancing without write access" >&2
+        fi
+    fi
+    echo "guest_numa_balancing=$(cat /proc/sys/kernel/numa_balancing)"
+fi
+cat > /tmp/gapbs_roi_common.hh <<'STEP16_COMMON_EOF'
+{COMMON_HEADER}
+STEP16_COMMON_EOF
+cat > /tmp/gapbs_kernel_roi.cc <<'STEP16_CC_EOF'
+{bench_source}
 STEP16_CC_EOF
 cat > /tmp/guest_gapbs_ipc.sh <<'STEP16_SH_EOF'
 {GUEST_SCRIPT}
@@ -330,6 +381,7 @@ export GAPBS_SCALE="{args.gapbs_scale}"
 export GAPBS_TRIALS="{args.gapbs_trials}"
 export GAPBS_MAX_ITERS="{args.gapbs_max_iters}"
 export GAPBS_FILE="{args.gapbs_file}"
+export GAPBS_KERNEL="{args.gapbs_kernel}"
 export OMP_NUM_THREADS="{omp_threads}"
 /tmp/guest_gapbs_ipc.sh
 """
@@ -347,6 +399,7 @@ point_metadata = {
     "cpu_bind": "node0",
     "roi_cpu": args.roi_cpu,
     "roi_max_insts": args.roi_max_insts,
+    "roi_warmup_insts": args.roi_warmup_insts,
     "num_cores": args.num_cores,
     "omp_threads": omp_threads,
     "cpu_mhz": args.cpu_mhz,
@@ -357,8 +410,8 @@ point_metadata = {
     "l1d_assoc": args.l1d_assoc,
     "l2_size": args.l2_size,
     "l2_assoc": args.l2_assoc,
-    "l3_size": args.l3_size,
-    "l3_assoc": args.l3_assoc,
+    "l3_size": effective_l3_size,
+    "l3_assoc": effective_l3_assoc,
     "num_l3_banks": args.num_l3_banks,
     "ruby_directory_tbes": args.ruby_directory_tbes,
     "aes_latency": variant["aes_latency"],
@@ -371,6 +424,8 @@ point_metadata = {
 }
 metadata_path = Path(m5.options.outdir) / "step16_point.json"
 metadata_path.write_text(json.dumps(point_metadata, indent=2) + "\n")
+
+warmup_pending = False
 
 
 class KernelBootedExitHandler(ExitHandler, hypercall_num=1):
@@ -396,12 +451,20 @@ class AfterBootStartedExitHandler(AfterBootExitHandler):
 class SwitchAtRoiExitHandler(ExitHandler, hypercall_num=4):
     @overrides(ExitHandler)
     def _process(self, simulator: "Simulator") -> None:
+        global warmup_pending
         print("Fourth exit: Step 16 ROI begins")
         print(f"Switching from KVM to {args.roi_cpu}")
         simulator.switch_processor()
         print("Resetting stats at Step 16 ROI boundary")
         m5.stats.reset()
-        if args.roi_max_insts:
+        if args.roi_warmup_insts:
+            warmup_pending = True
+            print(
+                "Scheduling Step 16 ROI warmup instruction limit: "
+                f"{args.roi_warmup_insts}"
+            )
+            simulator.schedule_max_insts(args.roi_warmup_insts)
+        elif args.roi_max_insts:
             print(f"Scheduling Step 16 ROI instruction limit: {args.roi_max_insts}")
             simulator.schedule_max_insts(args.roi_max_insts)
 
@@ -423,8 +486,19 @@ class DumpAndExitAfterBootScriptExitHandler(ExitHandler, hypercall_num=3):
 
 
 def dump_and_exit_on_max_insts():
-    print("Step 16 ROI instruction limit reached")
-    print("Dumping stats after Step 16 ROI instruction limit")
+    global warmup_pending
+    if warmup_pending:
+        warmup_pending = False
+        print("Step 16 ROI warmup instruction limit reached")
+        print("Resetting stats after Step 16 ROI warmup")
+        m5.stats.reset()
+        if args.roi_max_insts:
+            print(f"Scheduling Step 16 measured ROI instruction limit: {args.roi_max_insts}")
+            simulator.schedule_max_insts(args.roi_max_insts)
+        return False
+
+    print("Step 16 measured ROI instruction limit reached")
+    print("Dumping stats after Step 16 measured ROI instruction limit")
     m5.stats.dump()
     return True
 

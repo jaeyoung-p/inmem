@@ -3,7 +3,7 @@
 
 #include "gapbs_roi_common.hh"
 
-double pagerank_spmv_trial(
+double pagerank_trial(
     const Graph &graph,
     int max_iters,
     double tolerance,
@@ -12,16 +12,10 @@ double pagerank_spmv_trial(
     const double init_score = 1.0 / double(vertices);
     const double base_score = (1.0 - 0.85) / double(vertices);
     std::vector<double> scores(vertices, init_score);
-    std::vector<double> outgoing_contrib(vertices, 0.0);
     std::vector<double> next(vertices, 0.0);
 
     const double start = wall_seconds();
     for (int iter = 0; iter < max_iters; ++iter) {
-#pragma omp parallel for schedule(static)
-        for (size_t v = 0; v < vertices; ++v) {
-            outgoing_contrib[v] = scores[v] / double(graph.out_degree[v]);
-        }
-
         double error = 0.0;
 #pragma omp parallel for schedule(dynamic, 64) reduction(+ : error)
         for (size_t v = 0; v < vertices; ++v) {
@@ -29,13 +23,13 @@ double pagerank_spmv_trial(
             for (uint64_t offset = graph.in_row_start[v];
                  offset < graph.in_row_start[v + 1];
                  ++offset) {
-                incoming_total += outgoing_contrib[graph.in_neighbors[offset]];
+                const uint32_t src = graph.in_neighbors[offset];
+                incoming_total += scores[src] / double(graph.out_degree[src]);
             }
             const double score = base_score + 0.85 * incoming_total;
             next[v] = score;
             error += std::abs(score - scores[v]);
         }
-
         scores.swap(next);
         if (error < tolerance) {
             break;
@@ -48,7 +42,7 @@ double pagerank_spmv_trial(
 
 int main(int argc, char **argv) {
     const Options opts = parse_args(argc, argv);
-    print_config("pr_spmv", opts);
+    print_config("pr", opts);
 
     Graph graph = opts.file.empty() ? make_graph(opts.scale)
                                     : load_serialized_graph(opts.file);
@@ -58,7 +52,7 @@ int main(int argc, char **argv) {
     for (int trial = 0; trial < opts.trials; ++trial) {
         std::vector<double> scores;
         const double seconds =
-            pagerank_spmv_trial(graph, opts.max_iters, opts.tolerance, &scores);
+            pagerank_trial(graph, opts.max_iters, opts.tolerance, &scores);
         const double checksum =
             std::accumulate(scores.begin(), scores.end(), 0.0);
         std::cout << "STEP16_TRIAL trial=" << trial

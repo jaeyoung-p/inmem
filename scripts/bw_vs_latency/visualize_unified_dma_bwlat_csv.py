@@ -13,7 +13,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIGURE_ROOT = REPO_ROOT / "artifacts/figures"
 
@@ -23,24 +22,39 @@ NAME_MAPPING = {
         1: "CXL",
     },
     13: {
-        0: "Local+AES",
-        1: "CXL+AES",
+        0: "Local(C)",
+        1: "CXL(C)",
     },
     14: {
-        1: "CXL+AES+ExtraSlot",
+        1: "InMem",
     },
+    15: {
+        1: "CXL(C+I)",
+    },
+}
+
+LABEL_COLORS = {
+    "InMem": "tab:red",
+    "Local": "tab:blue",
+    "CXL": "tab:orange",
+    "Local(C)": "tab:green",
+    "CXL(C)": "tab:purple",
+    "CXL(C+I)": "tab:brown",
 }
 
 CSV_PATHS = {
     12: REPO_ROOT
     / "artifacts/figures/dma_bwlat/step_12_bw_latency_curve/"
-    / "m5out_dma_16x4_ddr5_4400_64k/dma_bwlat_results.csv",
+    / "dma_bwlat_results.csv",
     13: REPO_ROOT
     / "artifacts/figures/dma_bwlat/step_13_aes_bw_latency_curve/"
-    / "m5out_dma_aes_16x4_ddr5_4400_64k/dma_bwlat_results.csv",
+    / "dma_bwlat_results.csv",
     14: REPO_ROOT
     / "artifacts/figures/dma_bwlat/step_14_extra_cxl_data_slot/"
-    / "m5out_dma_aes_16x4_ddr5_4400_64k/dma_bwlat_results.csv",
+    / "dma_bwlat_results.csv",
+    15: REPO_ROOT
+    / "artifacts/figures/dma_bwlat/step_15_integrity_mac/"
+    / "dma_bwlat_results.csv",
 }
 
 OUTPUT_CSV = FIGURE_ROOT / "unified_dma_bwlat.csv"
@@ -125,18 +139,19 @@ def write_unified_csv(rows):
 
 
 def write_plot(rows):
-    fig, ax = plt.subplots(figsize=(9.4, 5.8), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(5, 3), constrained_layout=True)
 
     labels = [
-        label
-        for step in sorted(NAME_MAPPING)
-        for label in NAME_MAPPING[step].values()
+        label for step in sorted(NAME_MAPPING) for label in NAME_MAPPING[step].values()
     ]
+    labels = sorted(labels)
+    labels.remove("InMem")
+    labels.insert(0, "InMem")
     for label in labels:
         series = [row for row in rows if row["label"] == label]
         if not series:
             continue
-        series.sort(key=lambda row: row["achieved_bandwidth_gib_s"])
+        series.sort(key=lambda row: (row["offered_rate_Bps"], row["point_dir"]))
         ax.plot(
             [
                 equal_power_of_two_position(row["achieved_bandwidth_gib_s"])
@@ -145,6 +160,7 @@ def write_plot(rows):
             [row["latency_ns"] for row in series],
             marker="o",
             linewidth=2,
+            color=LABEL_COLORS[label],
             label=label,
         )
 
@@ -153,9 +169,9 @@ def write_plot(rows):
     ax.set_xlim(0.75, len(x_ticks) - 0.75)
     ax.set_xticks(range(len(x_ticks)))
     ax.set_xticklabels([format_gib_s(value) for value in x_ticks])
-    ax.set_xlabel("Achieved injected DMA read bandwidth (GiB/s)")
+    ax.set_xlabel("Injected Load (GiB/s)")
     ax.set_ylabel("Latency (ns)")
-    ax.set_title("Unified DMA Bandwidth vs Latency")
+    ax.set_title("Bandwidth vs Latency")
     ax.grid(True, which="major", alpha=0.35)
     ax.legend()
 

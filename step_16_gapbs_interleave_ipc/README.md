@@ -20,10 +20,19 @@ scons defconfig build/X86 build_opts/X86
 scons build/X86/gem5.opt -j$(nproc)
 ```
 
-The initial benchmark is PageRank SpMV with a GAPBS-style command line. Graph
-generation and allocation happen before the ROI under KVM. Only the measured
-PageRank SpMV trial runs after the ROI hypercall switches gem5 to `X86O3CPU`
+The default benchmark is PageRank SpMV with a GAPBS-style command line. Graph
+generation and allocation happen before the ROI under KVM. Only the selected
+graph kernel trial runs after the ROI hypercall switches gem5 to `X86O3CPU`
 and resets stats.
+
+Available `GAPBS_KERNEL` values:
+
+- `pr_spmv`: current PageRank SpMV-style pull kernel
+- `pr`: PageRank pull kernel without the precomputed contribution array
+- `bc`: single-source betweenness-centrality-style traversal
+- `sssp`: SSSP-style iterative relaxation
+- `cc`: connected-components-style label propagation
+- `tc`: triangle-counting-style adjacency intersection
 
 Generated graphs are the default. A guest-visible GAPBS `.sg` file can be used
 with `GAPBS_FILE=/path/in/guest/graph.sg`; it is still loaded under
@@ -34,7 +43,7 @@ with `GAPBS_FILE=/path/in/guest/graph.sg`; it is still loaded under
 ```sh
 cd /home/cc/inmem
 c++ -O3 -std=c++11 -fopenmp \
-  -o /tmp/gapbs_pr_spmv_roi \
+  -o /tmp/gapbs_kernel_roi \
   step_16_gapbs_interleave_ipc/scripts/gapbs_pr_spmv_roi.cc
 ```
 
@@ -43,7 +52,7 @@ Host run smoke:
 ```sh
 cd /home/cc/inmem
 OMP_NUM_THREADS=1 numactl --cpunodebind=0 --interleave=0,1 \
-  /tmp/gapbs_pr_spmv_roi -g 16 -n 1 --no-roi
+  /tmp/gapbs_kernel_roi -g 16 -n 1 --no-roi
 ```
 
 ## Config Smoke
@@ -64,6 +73,14 @@ gem5/build/X86/gem5.opt \
 ```sh
 cd /home/cc/inmem
 GAPBS_SCALE=14 GAPBS_TRIALS=1 VARIANTS=baseline \
+  step_16_gapbs_interleave_ipc/scripts/run_gapbs_ipc_variants.sh
+```
+
+To select another kernel:
+
+```sh
+cd /home/cc/inmem
+GAPBS_KERNEL=bc GAPBS_SCALE=14 GAPBS_TRIALS=1 VARIANTS=baseline \
   step_16_gapbs_interleave_ipc/scripts/run_gapbs_ipc_variants.sh
 ```
 
@@ -92,7 +109,8 @@ To run four OpenMP threads on four simulated cores with an 8MiB shared L3:
 ```sh
 cd /home/cc/inmem
 NUM_CORES=4 OMP_THREADS=4 L3_SIZE=8MiB L3_ASSOC=16 \
-  GAPBS_SCALE=27 GAPBS_TRIALS=1 VARIANTS="baseline" ROI_MAX_INSTS=100000000 \
+  GAPBS_SCALE=27 GAPBS_TRIALS=1 VARIANTS="baseline" \
+  ROI_WARMUP_INSTS=100000000 ROI_MAX_INSTS=100000000 \
   step_16_gapbs_interleave_ipc/scripts/run_gapbs_ipc_variants.sh
 ```
 
@@ -100,12 +118,18 @@ After the first complete point, inspect `simInsts`. If it is below 10M, raise
 `GAPBS_SCALE` or `GAPBS_TRIALS`. If it is above 100M and too slow, reduce one
 of them.
 
-To cap the measured ROI by committed instructions, set `ROI_MAX_INSTS`.
-The limit is scheduled immediately after switching from KVM to the ROI CPU and
-after stats reset:
+To warm up and then cap the measured ROI by committed instructions, set
+`ROI_WARMUP_INSTS` and `ROI_MAX_INSTS`. The warmup limit is scheduled after
+switching from KVM to the ROI CPU. When the warmup limit fires, stats are reset
+again, then the measured limit is scheduled:
 
 ```sh
 cd /home/cc/inmem
-GAPBS_SCALE=27 GAPBS_TRIALS=1 VARIANTS=baseline ROI_MAX_INSTS=100000000 \
+GAPBS_SCALE=27 GAPBS_TRIALS=1 VARIANTS=baseline \
+  ROI_WARMUP_INSTS=100000000 ROI_MAX_INSTS=100000000 \
   step_16_gapbs_interleave_ipc/scripts/run_gapbs_ipc_variants.sh
 ```
+
+With `ROI_WARMUP_INSTS=0`, `ROI_MAX_INSTS` is scheduled immediately after the
+ROI CPU switch and initial stats reset. With `ROI_MAX_INSTS=0`, no measured
+instruction cap is used.

@@ -8,12 +8,13 @@ set -eux
 : "${GAPBS_TRIALS:=1}"
 : "${GAPBS_MAX_ITERS:=20}"
 : "${GAPBS_FILE:=}"
+: "${GAPBS_KERNEL:=pr_spmv}"
 : "${OMP_NUM_THREADS:=1}"
 
 echo "=== STEP16 BUILD ==="
 c++ -O3 -std=c++11 -fopenmp \
-  -o /tmp/gapbs_pr_spmv_roi \
-  /tmp/gapbs_pr_spmv_roi.cc
+  -o /tmp/gapbs_kernel_roi \
+  /tmp/gapbs_kernel_roi.cc
 
 echo "=== STEP16 NODE ONLINE ==="
 cat /sys/devices/system/node/online
@@ -30,7 +31,7 @@ if [[ -n "${GAPBS_FILE}" ]]; then
 fi
 
 numactl --cpunodebind=0 --interleave=0,1 \
-  /tmp/gapbs_pr_spmv_roi \
+  /tmp/gapbs_kernel_roi \
   "${run_args[@]}"
 
 echo "=== STEP16 COMPLETE ==="
